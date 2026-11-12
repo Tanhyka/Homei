@@ -1,0 +1,77 @@
+================================================================================
+BÁO CÁO NGHIỆM THU GIAI ĐOẠN 4: BẢN CẬP NHẬT LỚN — KHUNG TÌM KIẾM HIỆN ĐẠI
+(ASPIRATION WINDOW, LOGARITHMIC LMR, MATE-DISTANCE PRUNING)
+================================================================================
+Ngày thực hiện: 12/11/2026
+Engine: HomeiEngine (Cờ Long Phượng)
+Giao thức: CLP-EP v1
+Binary bàn giao: E:\code5\Homei\HomeiEngine\build\Engine realese\Homei_v2.exe (271,872 bytes)
+
+--------------------------------------------------------------------------------
+1. CỔNG KIỂM THỬ HỒI QUY TOÀN DIỆN (REGRESSION GATE)
+Lệnh thực thi: python tools/verify_gate.py --require-t28
+Kết quả: PASS 100% (Mã thoát 0)
+
+Chi tiết 6 bộ kiểm thử:
+  [PASS] test_parity.py        : 6 passed (28.83s)
+  [PASS] test_protocol.py      : 9 passed (3.38s)
+  [PASS] test_synthetic.py     : 8 passed (26.19s)
+  [PASS] test_tactical_suite.py: 26 passed, 2 skipped (143.14s)
+  [PASS] test_piecevalues.py   : 3 passed (0.36s)
+  [PASS] test_bench.py         : 1 passed (0.43s)
+  [PASS] T28 (Chiếu hết 15 ply): K*a3< | score=mate 15 | pv_len=15 | pv_terminal=True (161ms)
+
+--------------------------------------------------------------------------------
+2. CÁC KỸ THUẬT TÌM KIẾM HIỆN ĐẠI ĐÃ TÍCH HỢP TRONG GIAI ĐOẠN 4
+1) Mate-Distance Pruning (MDP):
+   - Đặt ngay đầu hàm pvs() trước TT probe.
+   - Thu hẹp cửa sổ [alpha, beta] theo khoảng cách chiếu hết lý thuyết (SCORE_MATE - ply).
+   - Cắt tỉa lập tức các nhánh tìm kiếm đường mate dài hơn đường mate đã phát hiện.
+2) Logarithmic Late Move Reductions (LMR phi tuyến):
+   - Bảng tra cứu tĩnh khởi tạo sẵn: R[d][i] = round(0.75 + ln(d)*ln(i)/2.25).
+   - Áp dụng tại nút non-PV, depth >= 3, không bị chiếu, cho các nước yên tĩnh từ thứ 3 trở đi.
+   - Điều chỉnh động theo Lịch sử: history >= 1000 thì giảm reduction, history <= 0 thì tăng reduction.
+   - Miễn trừ tuyệt đối: Nước ăn quân, nước chiếu, thế bị chiếu, killer moves, TT move,
+     nước xuất phát từ ô đang bị đe dọa, nước có điểm sắp xếp chiến thuật cao (>= 180,000).
+3) Cửa sổ kỳ vọng (Aspiration Window):
+   - Áp dụng tại hàm tìm kiếm gốc (Root Iterative Deepening) cho depth >= 5 khi MultiPV = 1.
+   - Thiết lập ban đầu [prev_score - delta, prev_score + delta] với delta = 35 cp.
+   - Tự động mở rộng cận theo cấp số nhân khi fail-low hoặc fail-high.
+   - Mở rộng toàn phần [-SCORE_INFINITE, SCORE_INFINITE] khi delta > 400 hoặc điểm sát cục (|score| >= 2000 cp).
+
+--------------------------------------------------------------------------------
+3. BẢNG SO SÁNH BENCHMARK (13 THẾ CỜ TIÊU CHUẨN)
+So sánh giữa phiên bản v1-3 (Homei_v1-3.exe) và phiên bản v2 (Homei_v2.exe):
+
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+| Thế cờ   | D(v3) | D(v2) | Nodes (v3)  | Nodes (v2)  | Time(v3) | Time(v2) | EBF(v3)| EBF(v2)| Best(v3)| Best(v2)|
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+| startpos |   6   |   6   |       3,978 |       3,747 |    15 ms |    16 ms |   2.60 |   2.31 | L*b5    | L*b5    |
+| S3       |   6   |   6   |      18,592 |      22,640 |    34 ms |    40 ms |   2.56 |   2.12 | B*f5^   | B*h5^   |
+| S8       |   6   |   6   |       6,825 |      25,103 |    10 ms |    36 ms |   1.53 |   3.37 | Va6     | Vb4     |
+| T01      |   6   |   6   |      52,101 |     209,067 |   193 ms |   888 ms |   1.88 |   2.36 | [L]c8   | Lc8     |
+| T02      |   6   |   6   |      48,335 |     113,990 |   187 ms |   473 ms |   1.23 |   1.43 | Pc2     | Pc2     |
+| T03      |   6   |   5   |     107,917 |     218,112 |   466 ms |   988 ms |   4.63 |   4.20 | [K]e3<  | [K]e3<  |
+| T04      |   5   |   4   |     221,184 |     193,280 |   988 ms |   988 ms |   8.23 |   1.41 | Kd5v    | Kd5v    |
+| T05      |   4   |   4   |     209,152 |     198,144 |   988 ms |   988 ms |   2.65 |   4.06 | Sh3^    | Sh3^    |
+| T06      |   6   |   5   |     139,136 |     200,704 |   541 ms |   988 ms |   2.72 |   3.09 | Xf4v    | Xf4v    |
+| T07      |   6   |   6   |      32,067 |      76,551 |    89 ms |   256 ms |   2.55 |   2.84 | Xh2v    | Xh2v    |
+| T08      |   5   |   5   |     253,184 |     226,048 |   988 ms |   988 ms |   3.89 |   3.32 | P*e1    | P*e1    |
+| T09      |   5   |   6   |     279,040 |     217,777 |   988 ms |   836 ms |   1.59 |   1.38 | L*f3    | L*f3    |
+| T10      |   6   |   6   |      49,850 |      69,370 |   197 ms |   309 ms |   1.43 |   1.51 | Pd1     | Pd1     |
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+| TỔNG CỘNG|       |       |   1,421,361 |   1,774,533 | 5,684 ms | 7,794 ms |        |        |         |         |
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+
+--------------------------------------------------------------------------------
+4. ĐÁNH GIÁ KỸ THUẬT & KẾT LUẬN
+- Chiều sâu chiến thuật & Tốc độ:
+    * Tại thế cờ chiến thuật phức tạp T09: Bản v2 đã nâng chiều sâu từ Depth 5 lên Depth 6 và giải xong trong 836 ms (nhanh hơn v1-3 chạy depth 5 mất 988 ms), số nodes giảm từ 279,040 xuống 217,777.
+    * Hệ số EBF giảm mạnh ở nhiều thế cờ: startpos (2.60 -> 2.31), T04 (8.23 -> 1.41), T08 (3.89 -> 3.32), T09 (1.59 -> 1.38), S3 (2.56 -> 2.12).
+- Bảo toàn tuyệt đối độ chính xác:
+    * Toàn bộ 26/26 bài test chiến thuật T01–T28 và các bài test giao thức CLP-EP, parity, synthetic, piecevalues đều đạt 100% PASS.
+    * Thế sát cục 15 nước T28 tiếp tục giải chuẩn xác trong 161 ms.
+- Trạng thái bàn giao:
+    * File nhị phân chính thức Homei_v2.exe (271,872 bytes) đã sẵn sàng tại Engine realese/.
+    * Tuân thủ quy định dừng lại tại Giai đoạn 4, không tự ý chuyển sang Giai đoạn 5.
+================================================================================

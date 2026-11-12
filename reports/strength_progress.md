@@ -1,0 +1,26 @@
+# Tiến Độ Đo Sức Mạnh Các Phiên Bản Homei (Strength Testing)
+
+- [x] **0. Kiểm kê exe trong `E:\code5\Homei\HomeiEngine\build\Engine realese\`**:
+  - `Homei_v1.exe`: 218,624 bytes — Handshake CLP-EP v1 OK, `id name Homei` (Baseline; không có `Hash`/`Threads`/`newgame`, mặc định TT 64 MB, 1 luồng)
+  - `Homei_v1-1.exe`: 264,704 bytes — Handshake CLP-EP v1 OK, `id name Homei` (Chỉ khác `v1` ở bộ giải sát cục Tsume df-pn)
+  - `Homei_v1-2.exe`: 266,752 bytes — Handshake CLP-EP v1 OK, `id name Homei` (GĐ2: RFP, LMP, Futility, Razoring)
+  - `Homei_v1-3.exe`: 267,264 bytes — Handshake CLP-EP v1 OK, `id name Homei` (GĐ3: NMP, IIR, Check Ext, Singular Ext)
+  - `Homei_v2.exe`: 271,872 bytes — Handshake CLP-EP v1 OK, `id name Homei` (GĐ4: LMR, Aspiration, MDP, History)
+  - `Homei_v2-1.exe`: 273,920 bytes — Handshake CLP-EP v1 OK, `id name Homei` (GĐ5: Countermove, Full-depth Stack-SEE, Inline Sliding Rays)
+  - Ghi chú: `Homei_v1.exe.bak` (218,624 bytes) là file sao lưu, không phải exe.
+- [x] **1. Xây dựng `tools/openings.py` + `tools/match.py` và chạy cổng harness**:
+  - [x] `tools/openings.py`: 300 thế (startpos + 8 ply, seed 12345, khử trùng LPPN, lọc `|score depth 4| <= 150 cp`) -> `openings.txt` (322 attempts, 22 score-rejected, 151.0s)
+  - [x] `tools/match.py`: CLP-EP v1 (`CLPEPClient`), trọng tài `ref\clp`, timeout `movetime + 1000 ms`, song song (5 workers), `results.jsonl`, `games\<run>\<id>.txt`, Elo/95% CI (paired)/LOS
+  - [x] Cổng (a): `v1 vs v1`, 100 ván @ 100 ms: `49/0/51`, `Elo = -7.0 ± 69.7 [-76.9, +62.5]`, `LOS = 42.15%`, `0` phạm luật (`28` timeout, `414.4s`)
+  - [x] Cổng (b): `v1 @ 100 ms vs v1 @ 50 ms`, 100 ván: `62/0/38`, `Elo = +85.0 ± 83.3 [+6.6, +173.2]`, `LOS = 98.34%`, `0` phạm luật (`16` timeout, `377.1s`)
+- [ ] **2. Chạy ở movetime 100 ms, 300 ván mỗi cặp (mở rộng tối đa 900 nếu CI > ±40)**:
+  - [x] 2A Gauntlet vs `v1`: `v1-2` vs `v1` (600 ván @ 100 ms): `363/0/237`, `Elo = +74.1 ± 28.6 [+46.0, +103.2]`, `LOS = 100.00%`, `0` phạm luật, `70` timeout (`1222.1s + 1225.7s`)
+  - [x] 2A Gauntlet vs `v1`: `v1-3` vs `v1` (300 ván @ 100 ms): `191/0/109`, `Elo = +97.4 ± 38.9 [+59.7, +137.5]`, `LOS = 100.00%`, `0` phạm luật, `30` timeout (`1281.7s`)
+  - [x] 2A Gauntlet vs `v1`: `v2` vs `v1` (600 ván @ 100 ms): `339/0/261`, `Elo = +45.4 ± 28.8 [+17.0, +74.5]`, `LOS = 99.91%`, `0` phạm luật, `77` timeout (`1240.2s + 1325.5s`)
+  - [x] 2A Gauntlet vs `v1`: `v2-1` vs `v1` (300 ván @ 100 ms): `184/0/116`, `Elo = +80.1 ± 38.7 [+42.4, +119.8]`, `LOS = 100.00%`, `0` phạm luật, `28` timeout (`1234.2s`)
+  - [x] 2B Cặp kề nhau: `v1-3` vs `v1-2` (300 ván @ 100 ms): `156/0/144`, `Elo = +13.9 ± 38.3 [-24.2, +52.3]`, `LOS = 76.30%`, `0` phạm luật, `15` timeout (`1218.2s`)
+  - [x] 2B Cặp kề nhau: `v2` vs `v1-3` (300 ván @ 100 ms): `151/0/149`, `Elo = +2.3 ± 39.1 [-36.7, +41.4]`, `LOS = 54.64%`, `0` phạm luật, `22` timeout (`1242.5s`)
+  - [ ] 2B Cặp kề nhau: `v2-1` vs `v2`
+- [ ] **3. `v2-1` vs `v1` ở movetime 400 ms, 200 ván**
+- [ ] **4. Kiểm tra bot cũ `CLP-NN-V0` qua CLP-EP v1 và đấu `v2-1` vs `CLP-NN-V0` (100 ván) hoặc ghi lý do bỏ qua**
+- [ ] **5. Viết báo cáo `docs/strength_report.md`**

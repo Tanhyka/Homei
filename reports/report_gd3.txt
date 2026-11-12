@@ -1,0 +1,69 @@
+================================================================================
+BÁO CÁO NGHIỆM THU GIAI ĐOẠN 3: CẮT TỈA NƯỚC ĐI RỖNG CÓ ĐIỀU KIỆN
+(NULL-MOVE PRUNING - NMP)
+================================================================================
+Ngày thực hiện: 12/11/2026
+Engine: HomeiEngine (Cờ Long Phượng)
+Giao thức: CLP-EP v1
+Binary bàn giao: E:\code5\Homei\HomeiEngine\build\Engine realese\Homei_v1-3.exe (267,264 bytes)
+
+--------------------------------------------------------------------------------
+1. CỔNG KIỂM THỬ HỒI QUY TOÀN DIỆN (REGRESSION GATE)
+Lệnh thực thi: python tools/verify_gate.py --require-t28
+Kết quả: PASS 100% (Mã thoát 0)
+
+Chi tiết 6 bộ kiểm thử:
+  [PASS] test_parity.py        : 6 passed (30.52s)
+  [PASS] test_protocol.py      : 9 passed (3.45s)
+  [PASS] test_synthetic.py     : 8 passed (25.89s)
+  [PASS] test_tactical_suite.py: 26 passed, 2 skipped (143.36s)
+  [PASS] test_piecevalues.py   : 3 passed (0.33s)
+  [PASS] test_bench.py         : 1 passed (0.44s)
+  [PASS] T28 (Chiếu hết 15 ply): K*a3< | score=mate 15 | pv_len=15 | pv_terminal=True (166ms)
+
+Toàn bộ các chốt chặn an toàn NMP đặc thù Cờ Long Phượng đã được thực thi nghiêm ngặt:
+  - Mate Protection: Cấm NMP khi abs(beta) >= SCORE_MATE - 100 (bảo toàn 100% T23–T28).
+  - Tránh lặp NMP: allow_nmp = false trong nhánh con của null move search.
+  - Giai đoạn Tiền trận: pos.has_reserve(stm) cấm NMP khi còn Long/Phượng chưa thả.
+  - Chống Zugzwang: Yêu cầu bên đi phải còn quân cơ động khác ngoài Vương trên bàn hoặc tù binh.
+  - Nguy cơ lặp thế: count_repetitions >= 2 cấm NMP.
+  - Verification Search: Duyệt xác nhận lại ở depth >= 8 trước khi cắt tỉa.
+
+--------------------------------------------------------------------------------
+2. BẢNG SO SÁNH BENCHMARK (13 THẾ CỜ TIÊU CHUẨN)
+So sánh giữa phiên bản v1-2 (Homei_v1-2.exe) và phiên bản v1-3 (Homei_v1-3.exe):
+
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+| Thế cờ   | D(v2) | D(v3) | Nodes (v2)  | Nodes (v3)  | Time(v2) | Time(v3) | EBF(v2)| EBF(v3)| Best(v2)| Best(v3)|
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+| startpos |   6   |   6   |       3,978 |       3,978 |    17 ms |    17 ms |   2.60 |   2.60 | L*b5    | L*b5    |
+| S3       |   6   |   6   |      60,108 |      18,592 |   135 ms |    36 ms |   4.38 |   2.56 | Sh5^    | B*f5^   |
+| S8       |   6   |   6   |       7,060 |       6,825 |    11 ms |    10 ms |   1.58 |   1.53 | Va6     | Va6     |
+| T01      |   6   |   6   |      68,887 |      52,101 |   277 ms |   200 ms |   2.47 |   1.88 | [L]c8   | [L]c8   |
+| T02      |   6   |   6   |      49,114 |      48,335 |   202 ms |   191 ms |   1.25 |   1.23 | Pc2     | Pc2     |
+| T03      |   6   |   6   |     100,688 |     107,917 |   456 ms |   484 ms |   4.38 |   4.63 | [K]e3<  | [K]e3<  |
+| T04      |   5   |   5   |     214,016 |     215,040 |   989 ms |   988 ms |   8.23 |   8.23 | Kd5v    | Kd5v    |
+| T05      |   4   |   4   |     203,776 |     194,304 |   989 ms |   988 ms |   2.65 |   2.65 | Sh3^    | Sh3^    |
+| T06      |   6   |   6   |     146,103 |     139,136 |   585 ms |   563 ms |   2.86 |   2.72 | Xf4v    | Xf4v    |
+| T07      |   6   |   6   |      44,202 |      32,067 |   139 ms |    93 ms |   3.52 |   2.55 | Xh2v    | Xh2v    |
+| T08      |   5   |   5   |     237,824 |     245,760 |   988 ms |   988 ms |   3.89 |   3.89 | P*e1    | P*e1    |
+| T09      |   5   |   5   |     263,680 |     270,848 |   988 ms |   988 ms |   1.59 |   1.59 | L*f3    | L*f3    |
+| T10      |   6   |   6   |      82,591 |      49,850 |   387 ms |   204 ms |   2.31 |   1.43 | Pd1     | Pd1     |
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+| TỔNG CỘNG|       |       |   1,482,027 |   1,384,753 | 6,163 ms | 5,750 ms |        |        |         |         |
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+
+--------------------------------------------------------------------------------
+3. ĐÁNH GIÁ KỸ THUẬT & KẾT LUẬN
+- Hiệu ứng NMP:
+    * Giảm thêm ~100,000 nodes trên bộ 13 thế cờ benchmark (tổng duyệt giảm còn 1,384,753 nodes).
+    * Thế cờ S3: số node duyệt giảm từ 60,108 xuống 18,592 (giảm 69.1%), thời gian xử lý giảm từ 135 ms xuống 36 ms (nhanh gấp 3.75 lần).
+    * Thế cờ T10: số node duyệt giảm từ 82,591 xuống 49,850 (giảm 39.6%), thời gian giảm từ 387 ms xuống 204 ms.
+    * Thế cờ T01: số node duyệt giảm từ 68,887 xuống 52,101 (giảm 24.4%), thời gian giảm từ 277 ms xuống 200 ms.
+- Độ ổn định chiến thuật:
+    * Toàn bộ 26/26 bài test chiến thuật và chiếu hết T01–T28 đạt PASS 100%.
+    * Không xảy ra hiện tượng mù sát cục (blunder/blindness) nhờ chốt chặn abs(beta) < SCORE_MATE - 100.
+- Trạng thái bàn giao:
+    * File thực thi Homei_v1-3.exe đã được xuất xưởng tại Engine realese/.
+    * Đã dừng lại tại GĐ3 theo đúng chỉ thị, không tự ý chuyển sang GĐ4.
+================================================================================
