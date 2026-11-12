@@ -1,0 +1,28 @@
+# KẾ HOẠCH & TIẾN ĐỘ XÂY DỰNG HOMEI_V3.EXE
+
+- [x] **Bước 0: Lưu mốc an toàn**
+  - [x] Commit trạng thái hiện tại và gắn thẻ `git tag -f perf-v2-2`.
+- [x] **Bước 1: Đa luồng Lazy SMP & Lockless Transposition Table**
+  - [x] 1.1 Khai báo tùy chọn `Threads` trong handshake CLP-EP v1 (min 1, max 32, default 1; hỗ trợ `setoption` và biến môi trường `HOMEI_THREADS`).
+  - [x] 1.2 Lockless Transposition Table (`tt.h` / `tt.cpp`): cơ chế XOR lockless key ^ data an toàn nhiều luồng đọc/ghi không cần mutex.
+  - [x] 1.3 Lazy SMP Worker Pool (`src/search.h`, `src/search.cpp`): luồng phụ chạy song song Iterative Deepening trên bản sao `Position` riêng, lệch độ sâu nhẹ, chia sẻ Lockless TT, dừng nguyên tử `< 10ms`.
+- [x] **Bước 2: Nâng cấp bộ giải DF-PN đọc chắc Mate-15+ trên mọi thế cờ bất kỳ**
+  - [x] 2.1 Mở rộng bảng băm chuyên biệt DF-PN lên 262,144 entries (cấp phát 1 lần).
+  - [x] 2.2 Sắp xếp nước chiếu thông minh trong `generate_checks` (`src/mate.cpp`):
+    - Ưu tiên 1: Chiếu sát mặt Vương địch / bịt ô thoát.
+    - Ưu tiên 2: Chiếu bằng Đội (`team`) hoặc tách Đội mở tia chiếu (`discovered check`).
+    - Ưu tiên 3: Thả tù binh chiếu từ xa; xếp xoay tại chỗ (`rotate`) chiếu xuống cuối.
+  - [x] 2.3 Nâng ngân sách tìm kiếm sâu tại nút gốc (`mate_root` Pha 2):
+    - Chế độ `movetime > 0`: `max_ply = 26`, `max_nodes = 120,000`, trần thời gian `min(250 ms, movetime / 4)`.
+    - Chế độ `infinite`: `max_ply = 28`, `max_nodes = 500,000`, trần thời gian `1,000 ms` (tương thích `MultiPV > 1`).
+- [x] **Bước 3: Quản lý thời gian động & Triệt tiêu timeout trong QSearch**
+  - [x] 3.1 Chốt ngắt giờ nhạy trong `qsearch()`: kiểm tra mỗi 128 nodes, đặt `hard_limit = max(5, movetime - 15) ms`.
+  - [x] 3.2 Phân bổ thời gian thông minh cho chế độ đồng hồ (`camtime` / `xanhtime`): tính `optimum_time` và `maximum_time`, dừng sớm nếu điểm số và bestmove ổn định 3 độ sâu liên tiếp, gia hạn nếu điểm tụt mạnh.
+- [x] **Bước 4: Continuation History (2-ply) & ProbCut ($D \ge 5$)**
+  - [x] 4.1 Continuation History (`src/search.h`, `src/search.cpp`): bảng lịch sử phối hợp chuỗi nước 1-ply và 2-ply, cộng thưởng `depth * depth` khi quiet move gây beta-cutoff.
+  - [x] 4.2 ProbCut ở độ sâu trung bình – cao ($depth \ge 5$): thử các nước ăn quân/bắt Đội có Stack-SEE >= 0 với ngưỡng `beta + 180` ở `depth - 4`.
+- [x] **Bước 5: Kiểm định, Benchmark & Bàn giao Homei_v3.exe**
+  - [x] 5.1 Biên dịch Release và copy sang `E:\code5\Homei\HomeiEngine\build\Engine realese\Homei_v3.exe`.
+  - [x] 5.2 Chạy `python tools/verify_gate.py --require-t28` (1 luồng) và test `Threads = 4` trên bộ bài T23–T28, S1–S8: đạt 100% PASS, 0 timeout, 0 mate giả.
+  - [x] 5.3 Đo bench 13 thế so sánh `Homei_v2-2.exe` vs `Homei_v3.exe` (cả 1 luồng và 4 luồng).
+  - [x] 5.4 Xuất báo cáo `E:\code5\Homei\report_gd7.txt` và hoàn tất.

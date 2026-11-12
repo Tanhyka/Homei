@@ -24,8 +24,28 @@ struct TTEntry {
     uint8_t gen = 0;
 };
 
+#pragma pack(push, 1)
+struct TTData {
+    Move best_move;      // 6 bytes
+    int16_t score;       // 2 bytes
+    int16_t static_eval; // 2 bytes
+    int8_t depth;        // 1 byte
+    uint8_t bound;       // 1 byte
+    uint8_t gen;         // 1 byte
+    uint8_t pad[3];      // 3 bytes -> total 16 bytes
+};
+#pragma pack(pop)
+static_assert(sizeof(TTData) == 16, "TTData must be exactly 16 bytes for 128-bit lockless payload");
+
+// Lockless XOR storage: lock = key ^ d0 ^ d1
+struct TTLocklessSlot {
+    uint64_t lock = 0;
+    uint64_t d0 = 0;
+    uint64_t d1 = 0;
+};
+
 struct TTBucket {
-    TTEntry tier[2]; // tier[0]: depth-preferred, tier[1]: always-replace
+    TTLocklessSlot tier[2]; // tier[0]: depth-preferred, tier[1]: always-replace
 };
 
 inline int16_t score_to_tt(int score, int ply) {
@@ -48,6 +68,7 @@ public:
     void resize(size_t size_mb);
     void clear();
     void new_search() { ++generation_; }
+    uint8_t generation() const { return generation_; }
 
     bool probe(uint64_t key, TTEntry& out_entry) const;
     void store(uint64_t key, int depth, int ply, int score, uint8_t bound, Move best_move);

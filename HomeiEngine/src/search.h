@@ -4,6 +4,7 @@
 #include "movegen.h"
 #include "tt.h"
 #include "types.h"
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -18,6 +19,12 @@ struct SearchLimits {
     int64_t movetime_ms = 5000;
     int multipv = 1;
     bool infinite = false;
+    int64_t camtime_ms = 0;
+    int64_t xanhtime_ms = 0;
+    int64_t caminc_ms = 0;
+    int64_t xanhinc_ms = 0;
+    int64_t optimum_time_ms = 0;
+    int64_t maximum_time_ms = 0;
 };
 
 struct PVLine {
@@ -67,9 +74,26 @@ struct SearchStats {
 class Searcher {
 public:
     Searcher();
+    ~Searcher();
 
     void clear_tt() { tt_.clear(); }
     void resize_tt(size_t mb) { tt_.resize(mb); }
+
+    void set_threads(int threads) { num_threads_ = std::clamp(threads, 1, 32); }
+    int threads() const { return num_threads_; }
+
+    void set_shared_tt(TranspositionTable* shared_tt) { tt_ptr_ = shared_tt; }
+    void set_shared_cont_hist(int16_t (*c1)[NUM_SQUARES][32][NUM_SQUARES], int16_t (*c2)[NUM_SQUARES][32][NUM_SQUARES]) {
+        cont_hist_1ply_ = c1;
+        cont_hist_2ply_ = c2;
+        owns_cont_hist_ = false;
+    }
+    uint64_t nodes() const { return nodes_; }
+    void search_worker(const Position& root_pos, const SearchLimits& limits, std::atomic<bool>& stop_flag, int thread_id);
+
+    static inline int piece_facing_idx(uint8_t ptype, int8_t facing) {
+        return (static_cast<int>(ptype & 7) << 2) | (static_cast<int>(std::max<int8_t>(0, facing)) & 3);
+    }
 
 #ifdef HOMEI_STATS
     const SearchStats& stats() const { return stats_; }
@@ -88,6 +112,9 @@ private:
     SearchStats stats_;
 #endif
     TranspositionTable tt_;
+    TranspositionTable* tt_ptr_ = &tt_;
+    int num_threads_ = 1;
+    bool owns_cont_hist_ = true;
 
     // Search-local state
     SearchLimits limits_;
@@ -118,14 +145,20 @@ private:
     Move killers_[MAX_PLY + 4][2]{};
     int history_[2][8][NUM_SQUARES]{};
     Move countermoves_[2][8][NUM_SQUARES]{};
+    Move move_history_[MAX_PLY + 4]{};
+
+    // Continuation History: [prev_pf 32][prev_to 81][curr_pf 32][curr_to 81]
+    int16_t (*cont_hist_1ply_)[NUM_SQUARES][32][NUM_SQUARES] = nullptr;
+    int16_t (*cont_hist_2ply_)[NUM_SQUARES][32][NUM_SQUARES] = nullptr;
+
     Move pv_table_[MAX_PLY + 4][MAX_PLY + 4]{};
     int pv_length_[MAX_PLY + 4]{};
 
     bool check_stop();
     int count_repetitions(uint64_t hash, int ply) const;
     int qsearch(Position& pos, int alpha, int beta, int ply, int qply);
-    int pvs(Position& pos, int depth, int alpha, int beta, int ply, bool is_pv, int ext_budget, bool allow_nmp = true, Move prev_move = Move::none());
-    void score_moves(Position& pos, const MoveList& list, int* scores, Move tt_move, int ply, Move counter_move = Move::none()) const;
+    int pvs(Position& pos, int depth, int alpha, int beta, int ply, bool is_pv, int ext_budget, bool allow_nmp = true, Move prev_move = Move::none(), Move prev2_move = Move::none());
+    void score_moves(Position& pos, const MoveList& list, int* scores, Move tt_move, int ply, Move counter_move = Move::none(), Move prev1_move = Move::none(), Move prev2_move = Move::none()) const;
 };
 
 } // namespace homei

@@ -26,8 +26,37 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <filesystem>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace homei {
+
+static std::string get_engine_name() {
+#ifdef _WIN32
+    char path_buf[MAX_PATH];
+    DWORD len = GetModuleFileNameA(NULL, path_buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        std::error_code ec;
+        std::filesystem::path p(path_buf);
+        std::string stem = p.stem().string();
+        if (!stem.empty()) {
+            if (stem == "homei" || stem == "clp_core_cli") {
+                return "Homei";
+            }
+            return stem;
+        }
+    }
+#endif
+    return "Homei";
+}
 
 class EngineApp {
 public:
@@ -38,6 +67,13 @@ public:
         setup_initial_position(init_pos);
         current_state_ = make_base_state(init_pos, 0);
         has_state_ = true;
+        if (const char* env_t = std::getenv("HOMEI_THREADS")) {
+            int t = std::atoi(env_t);
+            if (t >= 1 && t <= 32) {
+                opt_threads_ = t;
+                searcher_.set_threads(t);
+            }
+        }
     }
 
     ~EngineApp() {
@@ -99,6 +135,7 @@ private:
     int opt_depth_ = 12;
     uint64_t opt_nodes_ = 50000000ULL;
     int opt_multipv_ = 1;
+    int opt_threads_ = 1;
 
     // Active background search
     std::thread search_thread_;
@@ -141,7 +178,9 @@ private:
             return false;
         }
         if (cmd == "clp 1") {
-            send_line("id name Homei");
+            std::string eng_name = get_engine_name();
+            send_line("id name " + eng_name);
+            send_line("id author Homei Team");
             send_line("protocol clp-ep 1");
             send_line("capability search legal");
             send_line("capability clocks movetime");
@@ -150,6 +189,7 @@ private:
             send_line("option name Depth type spin default 12 min 1 max 32");
             send_line("option name Nodes type spin default 50000000 min 1 max 50000000");
             send_line("option name MultiPV type spin default 1 min 1 max 5");
+            send_line("option name Threads type spin default 1 min 1 max 32");
             send_line("clpok");
             return true;
         }
@@ -280,6 +320,16 @@ private:
                 send_line("optionok name MultiPV value " + std::to_string(opt_multipv_));
                 return true;
             }
+            if (name == "Threads") {
+                if (val < 1 || val > 32) {
+                    send_error("Threads out of range 1..32");
+                    return true;
+                }
+                opt_threads_ = static_cast<int>(val);
+                searcher_.set_threads(opt_threads_);
+                send_line("optionok name Threads value " + std::to_string(opt_threads_));
+                return true;
+            }
             if (name == "Hash") {
                 if (val < 1 || val > 2048) {
                     send_error("Hash out of range 1..2048");
@@ -331,6 +381,31 @@ private:
                 limits.movetime_ms = ms;
                 limits.max_depth = opt_depth_;
                 limits.max_nodes = opt_nodes_;
+            } else if (mode == "camtime" || mode == "xanhtime" || mode == "btime" || mode == "wtime" || mode == "clock") {
+                limits.infinite = false;
+                limits.max_depth = opt_depth_;
+                limits.max_nodes = opt_nodes_;
+                std::string key = mode;
+                int64_t val = 0;
+                do {
+                    if (key == "camtime" || key == "btime") {
+                        if (iss >> val) limits.camtime_ms = val;
+                    } else if (key == "xanhtime" || key == "wtime") {
+                        if (iss >> val) limits.xanhtime_ms = val;
+                    } else if (key == "caminc" || key == "binc") {
+                        if (iss >> val) limits.caminc_ms = val;
+                    } else if (key == "xanhinc" || key == "winc") {
+                        if (iss >> val) limits.xanhinc_ms = val;
+                    }
+                } while (iss >> key);
+
+                Side stm = static_cast<Side>(current_state_.position.side_to_move);
+                int64_t time_left = (stm == CAM) ? limits.camtime_ms : limits.xanhtime_ms;
+                int64_t inc = (stm == CAM) ? limits.caminc_ms : limits.xanhinc_ms;
+                if (time_left <= 0) time_left = 5000;
+                limits.optimum_time_ms = std::max<int64_t>(10, time_left / 25 + inc * 3 / 4);
+                limits.maximum_time_ms = std::min<int64_t>(3 * limits.optimum_time_ms, time_left / 3);
+                limits.movetime_ms = limits.maximum_time_ms;
             } else {
                 send_error("Unsupported go mode");
                 return true;

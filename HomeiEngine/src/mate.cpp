@@ -539,6 +539,8 @@ void generate_checks(Position& pos, MoveList& out) {
             }
         }
     }
+
+
 }
 
 void generate_evasions(Position& pos, MoveList& out) {

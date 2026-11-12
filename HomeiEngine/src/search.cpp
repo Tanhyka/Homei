@@ -12,6 +12,8 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <memory>
+#include <thread>
 
 namespace homei {
 
@@ -154,10 +156,21 @@ void init_lmr_table() {
 
 } // namespace
 
-Searcher::Searcher() : tt_(64), ply_stack_(MAX_PLY + 8) {
+Searcher::Searcher() : tt_(64), tt_ptr_(&tt_), ply_stack_(MAX_PLY + 8) {
     init_attack_tables();
     init_lmr_table();
     std::memset(countermoves_, 0, sizeof(countermoves_));
+    std::memset(move_history_, 0, sizeof(move_history_));
+    cont_hist_1ply_ = new int16_t[32][NUM_SQUARES][32][NUM_SQUARES]();
+    cont_hist_2ply_ = new int16_t[32][NUM_SQUARES][32][NUM_SQUARES]();
+    owns_cont_hist_ = true;
+}
+
+Searcher::~Searcher() {
+    if (owns_cont_hist_) {
+        delete[] cont_hist_1ply_;
+        delete[] cont_hist_2ply_;
+    }
 }
 
 bool Searcher::check_stop() {
@@ -172,7 +185,7 @@ bool Searcher::check_stop() {
         abort_ = true;
         return true;
     }
-    if (current_root_depth_ > 1 && !limits_.infinite && (nodes_ & 255ULL) == 0) {
+    if (current_root_depth_ > 1 && !limits_.infinite && (nodes_ & 127ULL) == 0) {
         int64_t elapsed = now_ms() - start_time_ms_;
         if (elapsed >= hard_limit_ms_) {
             abort_ = true;
@@ -202,7 +215,7 @@ int Searcher::count_repetitions(uint64_t hash, int ply) const {
     return count;
 }
 
-void Searcher::score_moves(Position& pos, const MoveList& list, int* scores, Move tt_move, int ply, Move counter_move) const {
+void Searcher::score_moves(Position& pos, const MoveList& list, int* scores, Move tt_move, int ply, Move counter_move, Move prev1_move, Move prev2_move) const {
     Side stm = static_cast<Side>(pos.side_to_move);
     Side enemy = other_side(stm);
     int enemy_king = pos.king_sq[enemy];
@@ -376,8 +389,29 @@ void Searcher::score_moves(Position& pos, const MoveList& list, int* scores, Mov
             if (target_sq >= 0 && target_sq < NUM_SQUARES) {
                 sc += std::min(400000, history_[stm][m.ptype][target_sq]);
             }
-            uint8_t end_f = static_cast<uint8_t>((pos.cell[m.src].top().facing + m.rotate_after) & 3);
+
+            // Step 4.1: Continuation History bonus (1-ply and 2-ply)
             int end_sq = (m.kind == MoveKind::Rotate) ? m.src : m.dst;
+            if (end_sq >= 0 && end_sq < NUM_SQUARES) {
+                int8_t facing = (m.kind == MoveKind::Drop) ? m.facing : static_cast<int8_t>((pos.cell[m.src].top().facing + m.rotate_after) & 3);
+                int curr_pf = piece_facing_idx(m.ptype, facing);
+                if (!prev1_move.is_none() && cont_hist_1ply_) {
+                    int p1_sq = (prev1_move.kind == MoveKind::Rotate) ? prev1_move.src : prev1_move.dst;
+                    if (p1_sq >= 0 && p1_sq < NUM_SQUARES) {
+                        int p1_pf = piece_facing_idx(prev1_move.ptype, prev1_move.facing);
+                        sc += cont_hist_1ply_[p1_pf][p1_sq][curr_pf][end_sq];
+                    }
+                }
+                if (!prev2_move.is_none() && cont_hist_2ply_) {
+                    int p2_sq = (prev2_move.kind == MoveKind::Rotate) ? prev2_move.src : prev2_move.dst;
+                    if (p2_sq >= 0 && p2_sq < NUM_SQUARES) {
+                        int p2_pf = piece_facing_idx(prev2_move.ptype, prev2_move.facing);
+                        sc += cont_hist_2ply_[p2_pf][p2_sq][curr_pf][end_sq];
+                    }
+                }
+            }
+
+            uint8_t end_f = static_cast<uint8_t>((pos.cell[m.src].top().facing + m.rotate_after) & 3);
 
             if (ply <= 2) {
                 if (m.src >= 0 && m.dst >= 0 && src_danger[m.src] > 0) {
@@ -458,6 +492,10 @@ int Searcher::qsearch(Position& pos, int alpha, int beta, int ply, int qply) {
 #ifdef HOMEI_STATS
             ++stats_.qnodes;
 #endif
+            if ((nodes_ & 127ULL) == 0 && check_stop()) {
+                undo_move(pos, m, u);
+                return 0;
+            }
             path_hashes_[ply + 1] = pos.zobrist;
 
             int score = -qsearch(pos, -beta, -alpha, ply + 1, qply + 1);
@@ -558,6 +596,10 @@ int Searcher::qsearch(Position& pos, int alpha, int beta, int ply, int qply) {
 #ifdef HOMEI_STATS
         ++stats_.qnodes;
 #endif
+        if ((nodes_ & 127ULL) == 0 && check_stop()) {
+            undo_move(pos, m, u);
+            return 0;
+        }
         path_hashes_[ply + 1] = pos.zobrist;
 
         int score = -qsearch(pos, -beta, -alpha, ply + 1, qply + 1);
@@ -581,7 +623,7 @@ int Searcher::qsearch(Position& pos, int alpha, int beta, int ply, int qply) {
     return stand_pat;
 }
 
-int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool is_pv, int ext_budget, bool allow_nmp, Move prev_move) {
+int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool is_pv, int ext_budget, bool allow_nmp, Move prev_move, Move prev2_move) {
     pv_length_[ply] = ply;
     if (check_stop()) return 0;
 
@@ -615,7 +657,7 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
 #ifdef HOMEI_STATS
     ++stats_.tt_probe;
 #endif
-    bool tt_hit = tt_.probe(pos.zobrist, tte);
+    bool tt_hit = tt_ptr_->probe(pos.zobrist, tte);
     if (tt_hit) {
 #ifdef HOMEI_STATS
         ++stats_.tt_hit;
@@ -655,7 +697,7 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
         nodes_ += res.nodes;
         if (res.found && !res.pv.empty()) {
             int mate_score = SCORE_MATE - (ply + res.mate_ply);
-            tt_.store(pos.zobrist, depth, ply, mate_score, TT_EXACT, res.pv[0]);
+            tt_ptr_->store(pos.zobrist, depth, ply, mate_score, TT_EXACT, res.pv[0]);
             for (size_t mi = 0; mi < res.pv.size() && ply + mi < MAX_PLY; ++mi) {
                 pv_table_[ply][ply + mi] = res.pv[mi];
             }
@@ -731,7 +773,7 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
                 pos.zobrist ^= zobrist_side;
                 path_hashes_[ply + 1] = pos.zobrist;
 
-                int null_score = -pvs(pos, null_depth, -beta, -beta + 1, ply + 1, false, 0, false, Move::none());
+                int null_score = -pvs(pos, null_depth, -beta, -beta + 1, ply + 1, false, 0, false, Move::none(), Move::none());
 
                 pos.side_to_move = stm;
                 pos.zobrist = prev_zob;
@@ -745,7 +787,7 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
                         return beta;
                     }
                     // Verification search at high depth (d >= 8)
-                    int verif_score = pvs(pos, null_depth, beta - 1, beta, ply, false, 0, false, Move::none());
+                    int verif_score = pvs(pos, null_depth, beta - 1, beta, ply, false, 0, false, Move::none(), Move::none());
                     if (verif_score >= beta) {
 #ifdef HOMEI_STATS
                         ++stats_.null_move_cutoffs;
@@ -754,6 +796,28 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
                     }
                 } else if (EngineFeatures::get().mate_threat && null_score <= -SCORE_MATE + MAX_PLY) {
                     mate_threat = true;
+                }
+            }
+        }
+
+        // Step 4.2: ProbCut (depth >= 5, beta cutoff verification on good captures)
+        if (depth >= 5 && std::abs(beta) < SCORE_MATE - 100) {
+            int prob_beta = beta + 180;
+            MoveList cap_moves;
+            generate_legal_moves(pos, cap_moves);
+            for (int i = 0; i < cap_moves.count; ++i) {
+                const Move& cm = cap_moves.moves[i];
+                if (!is_capture_move(pos, cm)) continue;
+                if (stack_see_estimate(pos, cm) < 0) continue;
+
+                UndoState u_prob;
+                apply_move(pos, cm, u_prob);
+                path_hashes_[ply + 1] = pos.zobrist;
+                int prob_score = -pvs(pos, depth - 4, -prob_beta, -prob_beta + 1, ply + 1, false, 0, false, cm, prev_move);
+                undo_move(pos, cm, u_prob);
+                if (abort_) return 0;
+                if (prob_score >= prob_beta) {
+                    return prob_beta;
                 }
             }
         }
@@ -793,7 +857,7 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
         }
     }
 
-    score_moves(pos, legal, scores, tt_move, ply, counter_move);
+    score_moves(pos, legal, scores, tt_move, ply, counter_move, prev_move, prev2_move);
 
     int orig_alpha = alpha;
     int best_score = -SCORE_INFINITE;
@@ -884,7 +948,7 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
         int score = 0;
 
         if (moves_searched == 1) {
-            score = -pvs(pos, new_depth, -beta, -alpha, ply + 1, is_pv, next_ext_budget, true, m);
+            score = -pvs(pos, new_depth, -beta, -alpha, ply + 1, is_pv, next_ext_budget, true, m, prev_move);
         } else {
             // Logarithmic Late Move Reductions (LMR) for quiet non-exempt moves
             int reduction = 0;
@@ -909,15 +973,15 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
             }
 
             int reduced_depth = std::max(0, new_depth - reduction);
-            score = -pvs(pos, reduced_depth, -(alpha + 1), -alpha, ply + 1, false, next_ext_budget, true, m);
+            score = -pvs(pos, reduced_depth, -(alpha + 1), -alpha, ply + 1, false, next_ext_budget, true, m, prev_move);
             if (score > alpha && reduction > 0 && !abort_) {
 #ifdef HOMEI_STATS
                 ++stats_.lmr_researches;
 #endif
-                score = -pvs(pos, new_depth, -(alpha + 1), -alpha, ply + 1, false, next_ext_budget, true, m);
+                score = -pvs(pos, new_depth, -(alpha + 1), -alpha, ply + 1, false, next_ext_budget, true, m, prev_move);
             }
             if (score > alpha && score < beta && is_pv && !abort_) {
-                score = -pvs(pos, new_depth, -beta, -alpha, ply + 1, true, next_ext_budget, true, m);
+                score = -pvs(pos, new_depth, -beta, -alpha, ply + 1, true, next_ext_budget, true, m, prev_move);
             }
         }
 
@@ -961,6 +1025,31 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
                                 countermoves_[prev_side][prev_pt][prev_to] = m;
                             }
                         }
+                        // Step 4.1: Continuation History update (1-ply & 2-ply)
+                        if (cont_hist_1ply_ || cont_hist_2ply_) {
+                            int bonus = std::min(16000, depth * depth);
+                            int end_sq = (m.kind == MoveKind::Rotate) ? m.src : m.dst;
+                            if (end_sq >= 0 && end_sq < NUM_SQUARES) {
+                                int8_t facing = (m.kind == MoveKind::Drop) ? m.facing : static_cast<int8_t>((pos.cell[m.src].top().facing + m.rotate_after) & 3);
+                                int curr_pf = piece_facing_idx(m.ptype, facing);
+                                if (!prev_move.is_none() && cont_hist_1ply_) {
+                                    int p1_sq = (prev_move.kind == MoveKind::Rotate) ? prev_move.src : prev_move.dst;
+                                    if (p1_sq >= 0 && p1_sq < NUM_SQUARES) {
+                                        int p1_pf = piece_facing_idx(prev_move.ptype, prev_move.facing);
+                                        int val = cont_hist_1ply_[p1_pf][p1_sq][curr_pf][end_sq] + bonus;
+                                        cont_hist_1ply_[p1_pf][p1_sq][curr_pf][end_sq] = static_cast<int16_t>(std::clamp(val, -16000, 16000));
+                                    }
+                                }
+                                if (!prev2_move.is_none() && cont_hist_2ply_) {
+                                    int p2_sq = (prev2_move.kind == MoveKind::Rotate) ? prev2_move.src : prev2_move.dst;
+                                    if (p2_sq >= 0 && p2_sq < NUM_SQUARES) {
+                                        int p2_pf = piece_facing_idx(prev2_move.ptype, prev2_move.facing);
+                                        int val = cont_hist_2ply_[p2_pf][p2_sq][curr_pf][end_sq] + bonus;
+                                        cont_hist_2ply_[p2_pf][p2_sq][curr_pf][end_sq] = static_cast<int16_t>(std::clamp(val, -16000, 16000));
+                                    }
+                                }
+                            }
+                        }
                     }
                     break;
                 }
@@ -970,7 +1059,7 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
 
     if (rep_count == 1 && !abort_) {
         uint8_t bound = (best_score <= orig_alpha) ? TT_UPPER : ((best_score >= beta) ? TT_LOWER : TT_EXACT);
-        tt_.store(pos.zobrist, depth, ply, best_score, bound, best_move);
+        tt_ptr_->store(pos.zobrist, depth, ply, best_score, bound, best_move);
     }
 
     return best_score;
@@ -992,12 +1081,11 @@ SearchResult Searcher::search(
 #endif
     start_time_ms_ = now_ms();
 
-    if (limits_.movetime_ms <= 5) {
-        hard_limit_ms_ = limits_.movetime_ms;
-    } else if (limits_.movetime_ms <= 50) {
-        hard_limit_ms_ = limits_.movetime_ms - 2;
-    } else {
-        hard_limit_ms_ = limits_.movetime_ms - 12;
+    hard_limit_ms_ = std::max<int64_t>(5, limits_.movetime_ms - 15);
+    int64_t optimum_time = (limits_.optimum_time_ms > 0) ? limits_.optimum_time_ms : limits_.movetime_ms;
+    int64_t maximum_time = (limits_.maximum_time_ms > 0) ? limits_.maximum_time_ms : limits_.movetime_ms;
+    if (limits_.optimum_time_ms > 0) {
+        hard_limit_ms_ = std::max<int64_t>(5, maximum_time - 15);
     }
 
     // If state is already marked terminal, return none immediately (Section 3.2 & Test P.7)
@@ -1054,7 +1142,7 @@ SearchResult Searcher::search(
     std::memset(killers_, 0, sizeof(killers_));
     std::memset(history_, 0, sizeof(history_));
     std::memset(countermoves_, 0, sizeof(countermoves_));
-    tt_.new_search();
+    tt_ptr_->new_search();
 
     int max_d = std::clamp(limits_.max_depth, 1, 32);
     int multipv_k = std::min(std::clamp(limits_.multipv, 1, 5), root_legal.count);
@@ -1120,21 +1208,20 @@ SearchResult Searcher::search(
             bool enemy_in_chk = is_in_check(root_pos, enemy);
             bool own_in_chk = is_in_check(root_pos, stm);
 
-            bool has_mate_signal = (enemy_escapes <= 4) || (mate_res.root_pn <= 20) || enemy_in_chk || own_in_chk;
+            bool has_mate_signal = (enemy_escapes <= 4) || (mate_res.root_pn <= 25) || enemy_in_chk || own_in_chk;
 
             if (has_mate_signal && limits_.max_nodes >= 60000 && (limits_.infinite || limits_.movetime_ms <= 0 || hard_limit_ms_ >= 40)) {
                 int64_t phase2_budget = 0;
                 int deep_ply = 0;
                 uint64_t phase2_nodes = 0;
                 if (limits_.infinite || limits_.movetime_ms <= 0) {
-                    phase2_budget = 600;
-                    deep_ply = 24;
-                    phase2_nodes = std::min<uint64_t>(200000ULL, limits_.max_nodes);
+                    phase2_budget = 1000;
+                    deep_ply = 28;
+                    phase2_nodes = std::min<uint64_t>(500000ULL, limits_.max_nodes);
                 } else {
-                    phase2_budget = std::min<int64_t>(200, std::max<int64_t>(30, limits_.movetime_ms / 4));
-                    deep_ply = std::min(24, std::max(16, max_d));
-                    uint64_t target_nodes = (limits_.movetime_ms >= 4000) ? 100000ULL : 60000ULL;
-                    phase2_nodes = std::min<uint64_t>(target_nodes, limits_.max_nodes);
+                    phase2_budget = std::min<int64_t>(250, std::max<int64_t>(30, limits_.movetime_ms / 4));
+                    deep_ply = 26;
+                    phase2_nodes = std::min<uint64_t>(120000ULL, limits_.max_nodes);
                 }
                 mate_res = solve_mate(
                     root_pos, deep_ply, phase2_budget, phase2_nodes, stop_flag_, &mate_rep_
@@ -1171,7 +1258,7 @@ SearchResult Searcher::search(
                     break;
                 }
             }
-            tt_.store(root_pos.zobrist, 30, 0, root_mate_score, TT_EXACT, root_mate_move);
+            tt_ptr_->store(root_pos.zobrist, 30, 0, root_mate_score, TT_EXACT, root_mate_move);
 
             PVLine initial_line;
             initial_line.multipv_rank = 1;
@@ -1236,6 +1323,26 @@ SearchResult Searcher::search(
     }
 
     int prev_score = 0;
+    Move last_best_moves[3] = {Move::none(), Move::none(), Move::none()};
+    int last_scores[3] = {0, 0, 0};
+
+    std::atomic<bool> worker_stop{false};
+    std::vector<std::unique_ptr<Searcher>> workers;
+    std::vector<std::thread> worker_threads;
+
+    if (num_threads_ > 1) {
+        for (int t = 1; t < num_threads_; ++t) {
+            auto w = std::make_unique<Searcher>();
+            w->set_shared_tt(tt_ptr_);
+            w->set_shared_cont_hist(cont_hist_1ply_, cont_hist_2ply_);
+            workers.push_back(std::move(w));
+        }
+        for (int t = 1; t < num_threads_; ++t) {
+            worker_threads.emplace_back([&workers, &root_pos, this, &worker_stop, t]() {
+                workers[t - 1]->search_worker(root_pos, limits_, worker_stop, t);
+            });
+        }
+    }
 
     for (int d = 1; d <= max_d; ++d) {
         current_root_depth_ = d;
@@ -1295,15 +1402,15 @@ SearchResult Searcher::search(
 
                     int score = 0;
                     if (searched_in_rank == 0) {
-                        score = -pvs(root_pos, d - 1 + ext, -beta, -alpha, 1, true, ext_budget, true, m);
+                        score = -pvs(root_pos, d - 1 + ext, -beta, -alpha, 1, true, ext_budget, true, m, Move::none());
                     } else {
                         int root_red = (d >= 3 && searched_in_rank >= 8 && !gives_chk && root_scores[i] < 180000) ? 1 : 0;
-                        score = -pvs(root_pos, std::max(0, d - 1 + ext - root_red), -(alpha + 1), -alpha, 1, false, ext_budget, true, m);
+                        score = -pvs(root_pos, std::max(0, d - 1 + ext - root_red), -(alpha + 1), -alpha, 1, false, ext_budget, true, m, Move::none());
                         if (score > alpha && root_red > 0 && !abort_) {
-                            score = -pvs(root_pos, d - 1 + ext, -(alpha + 1), -alpha, 1, false, ext_budget, true, m);
+                            score = -pvs(root_pos, d - 1 + ext, -(alpha + 1), -alpha, 1, false, ext_budget, true, m, Move::none());
                         }
                         if (score > alpha && score < beta && !abort_) {
-                            score = -pvs(root_pos, d - 1 + ext, -beta, -alpha, 1, true, ext_budget, true, m);
+                            score = -pvs(root_pos, d - 1 + ext, -beta, -alpha, 1, true, ext_budget, true, m, Move::none());
                         }
                     }
 
@@ -1485,15 +1592,15 @@ SearchResult Searcher::search(
 
                     int score = 0;
                     if (searched_in_rank == 0) {
-                        score = -pvs(root_pos, d - 1 + ext, -beta, -alpha, 1, true, ext_budget, true, m);
+                        score = -pvs(root_pos, d - 1 + ext, -beta, -alpha, 1, true, ext_budget, true, m, Move::none());
                     } else {
                         int root_red = (d >= 3 && searched_in_rank >= 8 && !gives_chk && root_scores[i] < 180000) ? 1 : 0;
-                        score = -pvs(root_pos, std::max(0, d - 1 + ext - root_red), -(alpha + 1), -alpha, 1, false, ext_budget, true, m);
+                        score = -pvs(root_pos, std::max(0, d - 1 + ext - root_red), -(alpha + 1), -alpha, 1, false, ext_budget, true, m, Move::none());
                         if (score > alpha && root_red > 0 && !abort_) {
-                            score = -pvs(root_pos, d - 1 + ext, -(alpha + 1), -alpha, 1, false, ext_budget, true, m);
+                            score = -pvs(root_pos, d - 1 + ext, -(alpha + 1), -alpha, 1, false, ext_budget, true, m, Move::none());
                         }
                         if (score > alpha && score < beta && !abort_) {
-                            score = -pvs(root_pos, d - 1 + ext, -beta, -alpha, 1, true, ext_budget, true, m);
+                            score = -pvs(root_pos, d - 1 + ext, -beta, -alpha, 1, true, ext_budget, true, m, Move::none());
                         }
                     }
 
@@ -1592,6 +1699,32 @@ SearchResult Searcher::search(
                 }
             }
             prev_score = depth_lines[0].score;
+
+            // Step 3.2: Early exit in clock mode if bestmove and score stable over 3 depths
+            if (d >= 5 && optimum_time > 0 && !limits_.infinite) {
+                int64_t elapsed = now_ms() - start_time_ms_;
+                Move curr_best = depth_lines[0].pv.front();
+                int curr_score = depth_lines[0].score;
+
+                bool stable = (curr_best == last_best_moves[0] && curr_best == last_best_moves[1]);
+                bool score_stable = (std::abs(curr_score - last_scores[0]) <= 25 && std::abs(curr_score - last_scores[1]) <= 25);
+
+                if (stable && score_stable && std::abs(curr_score) < SCORE_MATE - 100) {
+                    if (elapsed >= static_cast<int64_t>(0.45 * optimum_time)) {
+                        break;
+                    }
+                }
+                if (last_scores[0] - curr_score > 40) {
+                    hard_limit_ms_ = std::max<int64_t>(5, maximum_time - 15);
+                }
+
+                last_best_moves[2] = last_best_moves[1];
+                last_best_moves[1] = last_best_moves[0];
+                last_best_moves[0] = curr_best;
+                last_scores[2] = last_scores[1];
+                last_scores[1] = last_scores[0];
+                last_scores[0] = curr_score;
+            }
         }
 
         if (abort_ || depth_aborted) break;
@@ -1608,9 +1741,61 @@ SearchResult Searcher::search(
         }
     }
 
+    worker_stop.store(true, std::memory_order_relaxed);
+    for (auto& th : worker_threads) {
+        if (th.joinable()) {
+            th.join();
+        }
+    }
+    for (const auto& w : workers) {
+        nodes_ += w->nodes_;
+    }
+
     res.total_nodes = nodes_;
     res.elapsed_ms = now_ms() - start_time_ms_;
     return res;
+}
+
+void Searcher::search_worker(
+    const Position& root_pos,
+    const SearchLimits& limits,
+    std::atomic<bool>& worker_stop,
+    int thread_id
+) {
+    Position pos = root_pos;
+    limits_ = limits;
+    stop_flag_ = &worker_stop;
+    abort_ = false;
+    nodes_ = 0;
+    start_time_ms_ = now_ms();
+    hard_limit_ms_ = 1000000000LL;
+
+    MoveList legal;
+    int scores[MAX_MOVES];
+    generate_legal_moves(pos, legal);
+    if (legal.count == 0) return;
+
+    path_hashes_[0] = pos.zobrist;
+    int max_d = std::clamp(limits_.max_depth, 1, 32);
+
+    int start_d = 1 + (thread_id % 2);
+    for (int d = start_d; d <= max_d; ++d) {
+        current_root_depth_ = d;
+        score_moves(pos, legal, scores, Move::none(), 0, Move::none(), Move::none(), Move::none());
+
+        for (int i = 0; i < legal.count; ++i) {
+            if (check_stop() || worker_stop.load(std::memory_order_relaxed)) return;
+            const Move& m = legal.moves[i];
+            UndoState u;
+            apply_move(pos, m, u);
+            ++nodes_;
+            path_hashes_[1] = pos.zobrist;
+
+            pvs(pos, d - 1, -SCORE_INFINITE, SCORE_INFINITE, 1, false, 0, true, m, Move::none());
+            undo_move(pos, m, u);
+        }
+        if (worker_stop.load(std::memory_order_relaxed)) return;
+    }
 }
 
 } // namespace homei
