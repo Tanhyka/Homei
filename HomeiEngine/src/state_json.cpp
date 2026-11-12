@@ -121,6 +121,16 @@ bool decode_position_json(const JsonValue& v, Position& out_pos, std::string& er
     }
 
     if (!validate_position(pos, true, err)) return false;
+    pos.king_sq[0] = 255;
+    pos.king_sq[1] = 255;
+    for (int sq = 0; sq < NUM_SQUARES; ++sq) {
+        const Cell& c = pos.cell[sq];
+        for (uint8_t i = 0; i < c.size; ++i) {
+            if (c.stack[i].type == VUONG) {
+                pos.king_sq[c.stack[i].owner] = static_cast<uint8_t>(sq);
+            }
+        }
+    }
     pos.zobrist = compute_zobrist(pos);
     out_pos = pos;
     return true;

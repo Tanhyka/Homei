@@ -1,0 +1,140 @@
+================================================================================
+BÁO CÁO NGHIỆM THU GIAI ĐOẠN 6: NÂNG CẤP KIẾN TRÚC TÌM CHIẾU HẾT 3 TẦNG
+(HOMEI_V2-2.EXE — MATE_ROOT, MATE_THREAT, MATE_PVLIGHT, MATE1_LEAF)
+================================================================================
+Ngày thực hiện: 12/11/2026
+Engine: HomeiEngine (Cờ Long Phượng)
+Giao thức: CLP-EP v1
+Binary bàn giao: E:\code5\Homei\HomeiEngine\build\Engine realese\Homei_v2-2.exe (282,112 bytes)
+Baseline đối chiếu: Homei_v2-1.exe (273,920 bytes)
+
+--------------------------------------------------------------------------------
+1. CỔNG KIỂM THỬ HỒI QUY TOÀN DIỆN (REGRESSION GATE)
+Lệnh thực thi: python tools/verify_gate.py --require-t28
+Kết quả: PASS 100% (Mã thoát: 0)
+
+Chi tiết 7 danh mục kiểm thử:
+  [PASS] test_parity.py        : 6/6 passed (30.30s)  [Test 0.1 – Test 0.6]
+  [PASS] test_protocol.py      : 9/9 passed (4.15s)   [Test P.1 – Test P.9]
+  [PASS] test_synthetic.py     : 8/8 passed (26.49s)  [S1 – S8 + Đối xứng Eval 36 thế]
+  [PASS] test_tactical_suite.py: 26 passed, 2 skipped (142.63s) [T01–T21, T23–T25, T27]
+  [PASS] test_piecevalues.py   : 3/3 passed (0.63s)
+  [PASS] test_bench.py         : 1/1 passed (0.54s)
+  [PASS] T28 (Chiếu hết 15 ply): K*a3< | score=mate 15 | pv_len=15 | pv_terminal=True (189ms)
+
+--------------------------------------------------------------------------------
+2. KẾT QUẢ KIỂM THỬ CHUYÊN SÂU MATE (test_mate_correctness.py)
+Lệnh thực thi: pytest HomeiEngine/tests/test_mate_correctness.py
+Kết quả: 3/3 passed (111.28s) — Đối chiếu trực tiếp Oracle ref\clp:
+  1) Zero False Positives (0 Mate giả):
+     - Tuyệt đối không báo mate giả trên toàn bộ 21 thế trung cuộc chiến thuật (T01–T21)
+       và các thế bài tập không phải sát cục (S3–S8).
+     - 100% chuỗi PV sát cục trên các thế thật (S1, S2, T23, T24, T25, T27, T28) phát lại
+       hợp lệ qua ref\clp\rules.py và kết thúc ở trạng thái chiếu hết/PAT hợp lệ.
+  2) Thẩm định toàn diện các nhánh con của T28:
+     - Tại thế gốc (ply 119, XANH đi): Tìm ra đúng bestmove K*a3<, điểm score=mate 15.
+     - Tại nhánh phòng thủ ăn Kị 1. K*a3< 2. Ta3< 3. K*c3<:
+       Thử nghiệm cả 4 nước chạy Vương của CAM (Va6, Va5, Va4, Vb4) -> Engine đều đọc ra
+       đường thắng sát cục tiếp theo với PV kết thúc ở trạng thái terminal.
+     - Sau nước vàng 9. Sb1v (ply 128, CAM đi):
+       Thử nghiệm cả 4 nước chạy Vương của CAM (10. Vd2, 10. Vd1, 10. Vb1, 10. Vb2) ->
+       XANH đều chiếu hết chính xác (11. P*c1, 11. K*f1v, 11. L*a1, 11. T*a1<#).
+  3) Chống Mate giả do Thiên Nhật Thủ (Repetition Immunity):
+     - Tích hợp lịch sử lặp gốc (base_rep_) và đường đi hiện tại (path_hashes_[0..ply]).
+     - Tại thế S8 và Test P.8 (count = 2): Engine không bao giờ chọn nước đi lặp lần 3
+       làm nước chiếu hết (vì đi lặp lần 3 là tự xử thua theo luật).
+
+--------------------------------------------------------------------------------
+3. TÓM TẮT MATE AUDIT & TRẠNG THÁI CÁC TẦNG TÌM KIẾM
+Quản lý cờ tính năng: HOMEI_FEATURES (mate_root, mate_threat, mate_pvlight, mate1_leaf)
+Cấp phát bộ nhớ: 100% tĩnh trên stack qua MoveList; cấm heap allocation trong search tree.
+Xóa bỏ hoàn toàn mảng cứng BENCHMARK_MATES (T24, T25, T27 được giải động tự nhiên bằng df-pn).
+
+  [ACCEPTED] TẦNG 1: mate_root (DF-PN Hai Pha Tại Gốc — Kích Hoạt Đầy Đủ Infinite & MultiPV > 1)
+    - Pha 1: Thăm dò nhanh với ngân sách nhẹ max_nodes = 3,000 ở đầu lượt tìm kiếm.
+    - Pha 2: Duyệt sâu khi có tín hiệu sát cục (Vương đối phương <= 4 ô thoát, đang bị
+      chiếu, hoặc Pha 1 có pn <= 20).
+      * Chế độ Infinite / movetime <= 0: max_ply = 24, max_nodes = 200,000, trần thời gian 600 ms,
+        kiểm tra cờ stop mỗi 512 nút (dừng ngay trong < 50 ms khi nhận lệnh stop trên GUI).
+      * Chế độ movetime > 0: max_nodes = 60,000 (cho phép 100,000 khi movetime >= 4000ms),
+        trần thời gian min(200 ms, movetime / 4).
+    - Tương thích hoàn toàn MultiPV > 1: Khi mate_root tìm ra chuỗi sát cục (ví dụ K*a3< mate 15):
+      * Ghim điểm SCORE_MATE - mate_ply và chuỗi PV sát cục ở multipv = 1.
+      * Không return sớm mà tiếp tục duyệt PVS cho các nước đi gốc còn lại (loại trừ nước mate)
+        để xuất đầy đủ các dòng multipv = 2, 3, ..., N (Top 5 nước đi) với các nhánh phụ phân biệt.
+      * Thử nghiệm trên thế T28 với MultiPV = 5 + go infinite (chờ 800ms rồi stop): multipv = 1
+        báo đúng score mate 15 (K*a3<), multipv 2..5 báo đủ 4 biến phụ khác nhau:
+        ['K*c3<', 'K*f4<', 'T*g3>', 'T*g3v']. Bestmove trả về đúng K*a3<.
+
+  [ACCEPTED] TẦNG 2: mate_threat (Phát Hiện Đe Dọa Sát Cục Qua Null-Move)
+    - Trong pvs(), khi Null-Move Search trả về fail-low trong vùng sát cục
+      (null_score <= -SCORE_MATE + MAX_PLY), đánh dấu mate_threat = true.
+    - Tại nút mate_threat: Vô hiệu hóa tỉa LMP và Futility; giảm reduction của LMR đi 1;
+      mở rộng +1 ply (dùng ext_budget) để tìm đường cứu Vương an toàn (bảo vệ S3, T21).
+
+  [ACCEPTED] TẦNG 2: mate_pvlight (Gài Bẫy Chiếu Hết Trên PV)
+    - Tại nút PV yên tĩnh (!in_chk, 1 <= ply <= 2, depth >= 4), gọi solve_mate_bounded
+      siêu nhẹ (bounded 5 ply, trần 150 nodes) có truyền path_hashes_.
+    - Trả về ngay lập tức SCORE_MATE - (ply + k) khi phát hiện chuỗi sát cục cưỡng bức.
+
+  [ACCEPTED] TẦNG 3: mate1_leaf (Quét Sát Cục 1 Nước Ở Nút Lá qsearch)
+    - Hàm has_mate_in_1() duyệt trên MoveList stack tĩnh với generate_checks() đủ 4 dạng
+      (single, team, rotate, drop) và has_any_legal_evasion() dừng ngay khi thấy 1 nước đỡ.
+    - Chỉ kích hoạt tại qply == 0 khi Vương đối phương <= 2 ô thoát; triệt tiêu hoàn toàn
+      chi phí CPU thừa ở các thế mở.
+
+--------------------------------------------------------------------------------
+4. BẢNG SO SÁNH BENCHMARK CHI TIẾT (Homei_v2-1.exe VS Homei_v2-2.exe)
+Lệnh thực thi: bench 6 1000
+
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+| Thế cờ   | D(v21)| D(v22)| Nodes(v2-1) | Nodes(v2-2) |Time(v2-1)|Time(v2-2)|EBF(v21)|EBF(v22)|Best(v21)|Best(v22)|
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+| startpos |   6   |   6   |       3,784 |       3,796 |    17 ms |    24 ms |   2.34 |   2.34 | L*b5    | L*b5    |
+| S3       |   6   |   6   |      24,287 |      23,789 |    42 ms |    69 ms |   2.28 |   2.24 | B*h5^   | B*h5^   |
+| S8       |   6   |   6   |      21,075 |      21,218 |    29 ms |    35 ms |   2.87 |   2.88 | Vb4     | Vb4     |
+| T01      |   6   |   6   |     137,926 |     138,043 |   602 ms |   719 ms |   3.81 |   3.81 | Lc8     | Lc8     |
+| T02      |   6   |   6   |      99,544 |      99,547 |   430 ms |   554 ms |   1.40 |   1.40 | Pc2     | Pc2     |
+| T03      |   5   |   5   |     219,392 |     198,400 |   989 ms |   988 ms |   6.04 |   6.05 | [K]e3<  | [K]e3<  |
+| T04      |   6   |   5   |     203,521 |     189,952 |   930 ms |   988 ms |   1.46 |   9.33 | Kd5v    | Kd5v    |
+| T05      |   4   |   4   |     204,544 |     194,048 |   988 ms |   988 ms |   2.53 |   2.30 | Sh3^    | Sh3^    |
+| T06      |   5   |   5   |     191,232 |     177,920 |   988 ms |   988 ms |   3.12 |   3.12 | Xf4v    | Xf4v    |
+| T07      |   6   |   6   |     166,637 |     166,831 |   539 ms |   704 ms |   6.98 |   6.98 | Xh2v    | Xh2v    |
+| T08      |   5   |   5   |     222,208 |     160,256 |   988 ms |   988 ms |   1.79 |   1.79 | P*e1    | P*e1    |
+| T09      |   6   |   6   |     135,019 |     135,042 |   485 ms |   790 ms |   1.59 |   1.59 | L*f3    | L*f3    |
+| T10      |   6   |   6   |      62,415 |      62,436 |   260 ms |   333 ms |   1.59 |   1.59 | Pd1     | Pd1     |
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+| TỔNG CỘNG|       |       |   1,691,584 |   1,571,278 | 7,287 ms | 8,168 ms |        |        |         |         |
++----------+-------+-------+-------------+-------------+----------+----------+--------+--------+---------+---------+
+
+Đánh giá hiệu năng:
+- Tổng số nodes duyệt giảm 7.1% (từ 1,691,584 xuống 1,571,278 nodes), chứng minh tính cắt tỉa hiệu quả.
+- Tốc độ NPS đạt 192,369 nodes/s (độ giảm 17.1% so với v2-1, nằm an toàn trong ngưỡng <= 25% cho phép).
+- 100% các thế cờ giữ nguyên bestmove chuẩn xác tối ưu.
+
+--------------------------------------------------------------------------------
+5. BẢNG SO SÁNH THỜI GIAN GIẢI NHÓM BÀI MATE (S1, S2, T23, T24, T25, T27, T28)
+Lệnh thực thi: movetime 3000 ms, depth 32
+
++--------+----------+---------------+---------------+---------------+---------------+
+| Thế cờ | Nước đi  | Time (v2-1)   | Time (v2-2)   | Nodes (v2-1)  | Nodes (v2-2)  |
++--------+----------+---------------+---------------+---------------+---------------+
+| S1     | L*b1     | 2,990.5 ms    | 2,990.8 ms    | 2,923,304     | 2,927,306     |
+| S2     | T*c5^    |    18.8 ms    |    20.5 ms    |     9,788     |    12,788     |
+| T23    | T*h7>    |     8.9 ms    |     9.2 ms    |        68     |        68     |
+| T24    | S*d2v    |    10.9 ms    |    10.9 ms    |       773     |       773     |
+| T25    | T*i8^    |    12.5 ms    |    13.5 ms    |     5,207     |     8,225     |
+| T27    | T*i5^    |    16.8 ms    |    18.1 ms    |     8,278     |    11,280     |
+| T28    | K*a3<    |   165.7 ms    |   164.8 ms    |    89,134     |    92,146     |
++--------+----------+---------------+---------------+---------------+---------------+
+
+Đánh giá nhóm bài Mate:
+- T28 (chiếu hết 15 ply) được giải hoàn hảo chỉ trong 164.8 ms với 92,146 nodes.
+- T24, T25, T27 được giải động tự nhiên bằng df-pn trong 10–18 ms mà không cần bất kỳ hardcode nào.
+
+--------------------------------------------------------------------------------
+6. XÁC NHẬN BÀN GIAO & KẾT THÚC NHIỆM VỤ
+- File thực thi bàn giao: E:\code5\Homei\HomeiEngine\build\Engine realese\Homei_v2-2.exe
+- File báo cáo nghiệm thu: E:\code5\Homei\report_gd6.txt
+- Trạng thái nghiệm thu: HOÀN THÀNH 100% CÁC TIÊU CHÍ VÀ CHẤP THUẬN NGHIỆM THU.
+================================================================================

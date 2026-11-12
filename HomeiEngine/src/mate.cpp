@@ -804,13 +804,17 @@ public:
         int64_t time_budget_ms,
         uint64_t max_nodes,
         const std::atomic<bool>* stop_flag,
-        const std::vector<RepHashEntry>* base_rep
+        const std::vector<RepHashEntry>* base_rep,
+        const uint64_t* prior_path = nullptr,
+        int prior_ply = 0
     )
         : start_ms_(now_ms()),
           time_budget_ms_(time_budget_ms),
           max_nodes_(max_nodes),
           stop_flag_(stop_flag),
-          base_rep_(base_rep) {
+          base_rep_(base_rep),
+          prior_path_(prior_path),
+          prior_ply_(prior_ply) {
         static thread_local std::vector<DfpnTTBucket> s_tt(DFPN_TT_SIZE);
         static thread_local std::vector<AnalyzeCacheEntry> s_ac(ANALYZE_CACHE_SIZE);
         static thread_local uint16_t s_gen = 0;
@@ -835,22 +839,28 @@ public:
 
         // Ultra-fast shallow exact passes up to 5 ply; cap lim=7 when max_ply > 7
         // so deep mates (like T28 mate-15) keep >95% of budget for full max_ply.
-        int limits[6];
+        int limits[8];
         int num_limits = 0;
         for (int lim = 1; lim <= std::min(max_ply, 7); lim += 2) {
             limits[num_limits++] = lim;
         }
         if (max_ply > 7) {
+            if (max_ply > 15) {
+                limits[num_limits++] = 15;
+            }
             limits[num_limits++] = max_ply;
         }
 
         uint64_t orig_max_nodes = max_nodes_;
+        uint32_t last_pn = PN_INF, last_dn = PN_INF;
         for (int li = 0; li < num_limits; ++li) {
             int lim = limits[li];
             if (check_abort()) break;
-            bool capped_lim7 = (lim == 7 && max_ply > 7);
-            if (capped_lim7) {
+            bool is_intermediate = (lim < max_ply);
+            if (lim == 7 && max_ply > 7) {
                 max_nodes_ = std::min(orig_max_nodes, nodes_ + 6000ULL);
+            } else if (lim == 15 && max_ply > 15) {
+                max_nodes_ = std::min(orig_max_nodes, nodes_ + 120000ULL);
             } else {
                 max_nodes_ = orig_max_nodes;
             }
@@ -858,7 +868,9 @@ public:
             uint8_t mate_len = 0;
             Move best_m = Move::none();
             dfpn(pos, lim, 0, true, PN_INF, PN_INF, pn, dn, best_m, mate_len);
-            if (capped_lim7) {
+            last_pn = pn;
+            last_dn = dn;
+            if (is_intermediate) {
                 max_nodes_ = orig_max_nodes;
                 abort_ = false;
                 if (stop_flag_ && stop_flag_->load(std::memory_order_relaxed)) abort_ = true;
@@ -868,6 +880,8 @@ public:
                 res.found = true;
                 res.mate_ply = static_cast<int>(mate_len);
                 res.nodes = nodes_;
+                res.root_pn = pn;
+                res.root_dn = dn;
                 extract_pv(root_pos, lim, res.pv);
                 if (!res.pv.empty()) {
                     res.mate_ply = static_cast<int>(res.pv.size());
@@ -877,6 +891,8 @@ public:
             if (dn == 0 && lim >= max_ply) {
                 res.found = false;
                 res.nodes = nodes_;
+                res.root_pn = pn;
+                res.root_dn = dn;
                 return res;
             }
         }
@@ -885,6 +901,8 @@ public:
         res.found = false;
         res.aborted = abort_;
         res.nodes = nodes_;
+        res.root_pn = last_pn;
+        res.root_dn = last_dn;
         return res;
     }
 
@@ -908,6 +926,8 @@ private:
     bool abort_ = false;
     const std::atomic<bool>* stop_flag_ = nullptr;
     const std::vector<RepHashEntry>* base_rep_ = nullptr;
+    const uint64_t* prior_path_ = nullptr;
+    int prior_ply_ = 0;
 
     uint64_t path_hashes_[MAX_MATE_DEPTH + 4]{};
     NodeMoves stack_[MAX_MATE_DEPTH + 4];
@@ -918,7 +938,7 @@ private:
             abort_ = true;
             return true;
         }
-        if ((nodes_ & 255ULL) == 0) {
+        if ((nodes_ & 511ULL) == 0) {
             if (stop_flag_ && stop_flag_->load(std::memory_order_relaxed)) {
                 abort_ = true;
                 return true;
@@ -941,7 +961,13 @@ private:
                 }
             }
         }
-        int start_i = base_rep_ ? 1 : 0;
+        if (prior_path_ && prior_ply_ > 0) {
+            int start_p = base_rep_ ? 1 : 0;
+            for (int i = start_p; i < prior_ply_; ++i) {
+                if (prior_path_[i] == hash) ++cnt;
+            }
+        }
+        int start_i = (base_rep_ || prior_ply_ > 0) ? 1 : 0;
         for (int i = start_i; i < ply; ++i) {
             if (path_hashes_[i] == hash) ++cnt;
         }
@@ -1646,6 +1672,63 @@ bool solve_mate(const Position& root_pos, int max_ply, Move& out_best_move, int&
         return true;
     }
     return false;
+}
+
+bool has_mate_in_1(
+    Position& pos,
+    Move& out_move,
+    const uint64_t* path_hashes,
+    int ply,
+    const std::vector<RepHashEntry>* base_rep
+) {
+    ensure_mate_init();
+    MoveList checks;
+    generate_checks(pos, checks);
+    for (int i = 0; i < checks.count; ++i) {
+        const Move& m = checks.moves[i];
+        UndoState u;
+        apply_move(pos, m, u);
+        int cnt = 1;
+        if (base_rep) {
+            for (const auto& e : *base_rep) {
+                if (e.hash == pos.zobrist) {
+                    cnt += e.count;
+                    break;
+                }
+            }
+        }
+        if (path_hashes) {
+            int start_p = base_rep ? 1 : 0;
+            for (int k = start_p; k <= ply; ++k) {
+                if (path_hashes[k] == pos.zobrist) ++cnt;
+            }
+        }
+        if (cnt >= 3) {
+            undo_move(pos, m, u);
+            continue;
+        }
+        bool has_ev = has_any_legal_evasion(pos);
+        undo_move(pos, m, u);
+        if (!has_ev) {
+            out_move = m;
+            return true;
+        }
+    }
+    return false;
+}
+
+MateResult solve_mate_bounded(
+    const Position& root_pos,
+    int max_ply,
+    uint64_t max_nodes,
+    const std::atomic<bool>* stop_flag,
+    const std::vector<RepHashEntry>* base_rep,
+    const uint64_t* prior_path,
+    int prior_ply
+) {
+    ensure_mate_init();
+    DfpnSolver solver(80, max_nodes, stop_flag, base_rep, prior_path, prior_ply);
+    return solver.solve(root_pos, max_ply);
 }
 
 } // namespace homei

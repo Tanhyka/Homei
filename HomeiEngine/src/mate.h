@@ -26,6 +26,8 @@ struct MateResult {
     int mate_ply = 0; // total plies (Shogi-style: odd = attacker moves, 1 = immediate mate)
     uint64_t nodes = 0;
     bool aborted = false;
+    uint32_t root_pn = 1;
+    uint32_t root_dn = 1;
     std::vector<Move> pv;
 };
 
@@ -46,5 +48,25 @@ MateResult solve_mate(
 
 // Convenience signature matching spec.
 bool solve_mate(const Position& root_pos, int max_ply, Move& out_best_move, int& out_mate_ply);
+
+// Fast mate-in-1 scanner on static MoveList.
+bool has_mate_in_1(
+    Position& pos,
+    Move& out_move,
+    const uint64_t* path_hashes = nullptr,
+    int ply = 0,
+    const std::vector<RepHashEntry>* base_rep = nullptr
+);
+
+// Lightweight bounded df-pn for PV nodes with search-path history.
+MateResult solve_mate_bounded(
+    const Position& root_pos,
+    int max_ply = 5,
+    uint64_t max_nodes = 150,
+    const std::atomic<bool>* stop_flag = nullptr,
+    const std::vector<RepHashEntry>* base_rep = nullptr,
+    const uint64_t* prior_path = nullptr,
+    int prior_ply = 0
+);
 
 } // namespace homei

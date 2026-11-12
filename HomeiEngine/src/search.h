@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mate.h"
 #include "movegen.h"
 #include "tt.h"
 #include "types.h"
@@ -103,6 +104,7 @@ private:
         int count;
     };
     std::vector<BaseRepEntry> base_rep_;
+    std::vector<RepHashEntry> mate_rep_;
 
     // Search stack (heap-allocated to prevent thread stack overflow)
     struct PlyStack {

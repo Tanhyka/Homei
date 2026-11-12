@@ -1,6 +1,7 @@
 #include "search.h"
 #include "attack.h"
 #include "eval.h"
+#include "features.h"
 #include "geometry.h"
 #include "mate.h"
 #include "movegen.h"
@@ -479,6 +480,36 @@ int Searcher::qsearch(Position& pos, int alpha, int beta, int ply, int qply) {
         return best_score;
     }
 
+    // Tier 3: mate1_leaf fast scan at qply == 0
+    if (EngineFeatures::get().mate1_leaf && qply == 0 && !in_chk) {
+        Side enemy = other_side(stm);
+        int ek = pos.king_sq[enemy];
+        int escapes = 0;
+        if (ek < NUM_SQUARES) {
+            int dsts[16];
+            int nd = get_raw_destinations(pos, ek, dsts);
+            for (int i = 0; i < nd; ++i) {
+                int sq = dsts[i];
+                const Cell& c = pos.cell[sq];
+                if (c.empty() || c.owner() == stm) {
+                    if (!is_attacked(pos, sq, stm)) {
+                        ++escapes;
+                    }
+                }
+            }
+        }
+        if (escapes <= 2) {
+            Move m1 = Move::none();
+            if (has_mate_in_1(pos, m1, path_hashes_, ply, &mate_rep_)) {
+                int score = SCORE_MATE - (ply + 1);
+                tt_.store(pos.zobrist, 1, ply, score, TT_EXACT, m1);
+                pv_table_[ply][ply] = m1;
+                pv_length_[ply] = ply + 1;
+                return score;
+            }
+        }
+    }
+
     int stand_pat = evaluate(pos);
     if (stand_pat >= beta) {
         return stand_pat;
@@ -617,6 +648,24 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
     Side enemy = other_side(stm);
     bool in_chk = is_in_check(pos, stm);
 
+    // Tier 2: mate_pvlight on PV nodes
+    if (EngineFeatures::get().mate_pvlight && is_pv && !in_chk && ply >= 1 && ply <= 2 && depth >= 4 &&
+        std::abs(alpha) < SCORE_MATE - 100 && std::abs(beta) < SCORE_MATE - 100) {
+        MateResult res = solve_mate_bounded(pos, 5, 150, stop_flag_, &mate_rep_, path_hashes_, ply);
+        nodes_ += res.nodes;
+        if (res.found && !res.pv.empty()) {
+            int mate_score = SCORE_MATE - (ply + res.mate_ply);
+            tt_.store(pos.zobrist, depth, ply, mate_score, TT_EXACT, res.pv[0]);
+            for (size_t mi = 0; mi < res.pv.size() && ply + mi < MAX_PLY; ++mi) {
+                pv_table_[ply][ply + mi] = res.pv[mi];
+            }
+            pv_length_[ply] = ply + static_cast<int>(res.pv.size());
+            return mate_score;
+        }
+    }
+
+    bool mate_threat = false;
+
     constexpr bool ENABLE_RFP = true;
     constexpr bool ENABLE_RAZORING = true;
     constexpr bool ENABLE_FUTILITY = true;
@@ -703,9 +752,16 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
 #endif
                         return beta;
                     }
+                } else if (EngineFeatures::get().mate_threat && null_score <= -SCORE_MATE + MAX_PLY) {
+                    mate_threat = true;
                 }
             }
         }
+    }
+
+    if (mate_threat && ext_budget > 0) {
+        ++depth;
+        --ext_budget;
     }
 
     // 3. Generate legal moves
@@ -746,12 +802,12 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
     int own_king = pos.king_sq[stm];
     int enemy_king = pos.king_sq[enemy];
 
-    bool futility_pruning = (ENABLE_FUTILITY && !is_pv && !in_chk && depth <= 3 && rep_count == 1 &&
+    bool futility_pruning = !mate_threat && (ENABLE_FUTILITY && !is_pv && !in_chk && depth <= 3 && rep_count == 1 &&
                              std::abs(alpha) < SCORE_MATE - 100 &&
                              std::abs(beta) < SCORE_MATE - 100 &&
                              (static_eval + 120 * depth < alpha));
 
-    bool lmp_active = (ENABLE_LMP && !is_pv && !in_chk && depth <= 4 && rep_count == 1 &&
+    bool lmp_active = !mate_threat && (ENABLE_LMP && !is_pv && !in_chk && depth <= 4 && rep_count == 1 &&
                        std::abs(alpha) < SCORE_MATE - 100 &&
                        std::abs(beta) < SCORE_MATE - 100);
 
@@ -845,6 +901,9 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
                     --reduction;
                 } else if (hist <= 0) {
                     ++reduction;
+                }
+                if (mate_threat && reduction > 0) {
+                    --reduction;
                 }
                 reduction = std::clamp(reduction, 0, new_depth - 1);
             }
@@ -948,6 +1007,19 @@ SearchResult Searcher::search(
     }
 
     Position root_pos = state.position;
+    for (int s = 0; s < 2; ++s) {
+        if (root_pos.king_sq[s] >= NUM_SQUARES) {
+            for (int sq = 0; sq < NUM_SQUARES; ++sq) {
+                const Cell& c = root_pos.cell[sq];
+                for (uint8_t i = 0; i < c.size; ++i) {
+                    if (c.stack[i].type == VUONG && c.stack[i].owner == s) {
+                        root_pos.king_sq[s] = static_cast<uint8_t>(sq);
+                        break;
+                    }
+                }
+            }
+        }
+    }
     MoveList& root_legal = ply_stack_[0].moves;
     int* root_scores = ply_stack_[0].scores;
     generate_legal_moves(root_pos, root_legal);
@@ -971,6 +1043,11 @@ SearchResult Searcher::search(
         if (!merged) {
             base_rep_.push_back({re.hash, re.count});
         }
+    }
+    mate_rep_.clear();
+    mate_rep_.reserve(base_rep_.size());
+    for (const auto& b : base_rep_) {
+        mate_rep_.push_back({b.hash, b.count});
     }
 
     path_hashes_[0] = root_pos.zobrist;
@@ -997,82 +1074,121 @@ SearchResult Searcher::search(
 
     res.best_move = root_legal.moves[0];
 
-    // Tsume Shogi AND/OR forced-mate solver before Iterative Deepening
-    if (multipv_k == 1 && limits_.max_nodes >= 1000 &&
-        (limits_.infinite || hard_limit_ms_ >= 80)) {
-        int64_t mate_budget_ms = 250;
-        if (!limits_.infinite) {
-            if (hard_limit_ms_ >= 2000) {
-                mate_budget_ms = 250;
-            } else {
-                mate_budget_ms = std::clamp<int64_t>(hard_limit_ms_ / 4, 50, 100);
-            }
-        }
+    bool root_mate_found = false;
+    Move root_mate_move = Move::none();
+    int root_mate_ply = 0;
+    int root_mate_score = 0;
+    std::vector<Move> root_mate_pv;
+
+    // Tier 1: Two-Phase df-pn at Root (mate_root)
+    if (EngineFeatures::get().mate_root && limits_.max_nodes >= 1000 &&
+        (limits_.infinite || limits_.movetime_ms <= 0 || hard_limit_ms_ >= 30)) {
+
+        int64_t phase1_budget = (limits_.infinite || limits_.movetime_ms <= 0) ? 60 : std::clamp<int64_t>(limits_.movetime_ms / 5, 20, 50);
         int mate_max_ply = std::min(16, max_d);
-        uint64_t mate_max_nodes = std::min<uint64_t>(5000000ULL, limits_.max_nodes);
-        std::vector<RepHashEntry> mate_rep;
-        mate_rep.reserve(base_rep_.size());
-        for (const auto& re : base_rep_) {
-            mate_rep.push_back({re.hash, re.count});
-        }
+        uint64_t phase1_nodes = std::min<uint64_t>(3000ULL, limits_.max_nodes / 10);
         MateResult mate_res = solve_mate(
-            root_pos, mate_max_ply, mate_budget_ms, mate_max_nodes, stop_flag_, &mate_rep
+            root_pos, mate_max_ply, phase1_budget, phase1_nodes, stop_flag_, &mate_rep_
         );
         nodes_ += mate_res.nodes;
-        if (mate_res.found && !mate_res.pv.empty()) {
-            PVLine line;
-            line.multipv_rank = 1;
-            line.depth = std::max(1, mate_res.mate_ply);
-            line.score = SCORE_MATE - mate_res.mate_ply;
-            line.nodes = nodes_;
-            line.time_ms = std::max<int64_t>(1, now_ms() - start_time_ms_);
-            line.pv = mate_res.pv;
-            if (on_info) {
-                on_info(line);
-            }
-            res.lines = {line};
-            res.best_move = mate_res.pv.front();
+
+        if (stop_flag_ && stop_flag_->load(std::memory_order_relaxed)) {
+            res.best_move = root_legal.moves[0];
             res.total_nodes = nodes_;
             res.elapsed_ms = now_ms() - start_time_ms_;
             return res;
         }
-    }
 
-    // Benchmark solutions for tactical / mate positions
-    struct BenchmarkMate {
-        uint64_t hash;
-        int ply_count;
-        const char* pv[8];
-    };
-    static const BenchmarkMate BENCHMARK_MATES[] = {
-        {3383971105235698242ULL, 5, {"X*d2v", "Ve1", "S*e2>", "Vf2", "B*f1<"}},                  // T24
-        {7781054219709536451ULL, 3, {"T*i8^", "Vg9", "Th9^"}},                                     // T25
-        {9429302950267456083ULL, 7, {"P*i5", "Vi5", "T*i6^", "Vh4", "S*i5<", "Vi3", "K*h5>"}},    // T27
-    };
-    for (const auto& bm : BENCHMARK_MATES) {
-        if (root_pos.zobrist == bm.hash) {
-            std::vector<Move> mate_pv;
-            Position sim = root_pos;
-            for (int k = 0; k < bm.ply_count; ++k) {
-                Move m;
-                std::string err;
-                if (parse_canonical_notation(sim, bm.pv[k], m, err)) {
-                    mate_pv.push_back(m);
-                    UndoState u;
-                    apply_move(sim, m, u);
+        if (!mate_res.found) {
+            Side stm = static_cast<Side>(root_pos.side_to_move);
+            Side enemy = other_side(stm);
+            int ek = root_pos.king_sq[enemy];
+            int enemy_escapes = 0;
+            if (ek < NUM_SQUARES) {
+                int dsts[16];
+                int nd = get_raw_destinations(root_pos, ek, dsts);
+                for (int i = 0; i < nd; ++i) {
+                    int sq = dsts[i];
+                    const Cell& c = root_pos.cell[sq];
+                    if (c.empty() || c.owner() == stm) {
+                        if (!is_attacked(root_pos, sq, stm)) {
+                            ++enemy_escapes;
+                        }
+                    }
                 }
             }
-            if (static_cast<int>(mate_pv.size()) == bm.ply_count) {
-                PVLine line;
-                line.multipv_rank = 1;
-                line.depth = bm.ply_count;
-                line.score = SCORE_MATE - bm.ply_count;
-                line.nodes = 100;
-                line.time_ms = 5;
-                line.pv = mate_pv;
-                if (on_info) on_info(line);
-                res.lines = {line};
-                res.best_move = mate_pv[0];
+            bool enemy_in_chk = is_in_check(root_pos, enemy);
+            bool own_in_chk = is_in_check(root_pos, stm);
+
+            bool has_mate_signal = (enemy_escapes <= 4) || (mate_res.root_pn <= 20) || enemy_in_chk || own_in_chk;
+
+            if (has_mate_signal && limits_.max_nodes >= 60000 && (limits_.infinite || limits_.movetime_ms <= 0 || hard_limit_ms_ >= 40)) {
+                int64_t phase2_budget = 0;
+                int deep_ply = 0;
+                uint64_t phase2_nodes = 0;
+                if (limits_.infinite || limits_.movetime_ms <= 0) {
+                    phase2_budget = 600;
+                    deep_ply = 24;
+                    phase2_nodes = std::min<uint64_t>(200000ULL, limits_.max_nodes);
+                } else {
+                    phase2_budget = std::min<int64_t>(200, std::max<int64_t>(30, limits_.movetime_ms / 4));
+                    deep_ply = std::min(24, std::max(16, max_d));
+                    uint64_t target_nodes = (limits_.movetime_ms >= 4000) ? 100000ULL : 60000ULL;
+                    phase2_nodes = std::min<uint64_t>(target_nodes, limits_.max_nodes);
+                }
+                mate_res = solve_mate(
+                    root_pos, deep_ply, phase2_budget, phase2_nodes, stop_flag_, &mate_rep_
+                );
+                nodes_ += mate_res.nodes;
+            }
+        }
+
+        if (stop_flag_ && stop_flag_->load(std::memory_order_relaxed)) {
+            res.best_move = root_legal.moves[0];
+            res.total_nodes = nodes_;
+            res.elapsed_ms = now_ms() - start_time_ms_;
+            return res;
+        }
+
+        if (mate_res.found && !mate_res.pv.empty()) {
+            root_mate_found = true;
+            root_mate_move = mate_res.pv.front();
+            root_mate_ply = mate_res.mate_ply;
+            root_mate_score = SCORE_MATE - mate_res.mate_ply;
+            root_mate_pv = mate_res.pv;
+
+            // Reorder root_legal so root_mate_move is at root_legal[0]
+            for (int ri = 0; ri < root_legal.count; ++ri) {
+                if (root_legal.moves[ri] == root_mate_move) {
+                    Move tmp = root_legal.moves[ri];
+                    int tmp_sc = root_scores[ri];
+                    for (int k = ri; k > 0; --k) {
+                        root_legal.moves[k] = root_legal.moves[k - 1];
+                        root_scores[k] = root_scores[k - 1];
+                    }
+                    root_legal.moves[0] = tmp;
+                    root_scores[0] = 10000000;
+                    break;
+                }
+            }
+            tt_.store(root_pos.zobrist, 30, 0, root_mate_score, TT_EXACT, root_mate_move);
+
+            PVLine initial_line;
+            initial_line.multipv_rank = 1;
+            initial_line.depth = std::max(1, root_mate_ply);
+            initial_line.score = root_mate_score;
+            initial_line.nodes = nodes_;
+            initial_line.time_ms = std::max<int64_t>(1, now_ms() - start_time_ms_);
+            initial_line.pv = root_mate_pv;
+            if (on_info) {
+                on_info(initial_line);
+            }
+            res.lines = {initial_line};
+            res.best_move = root_mate_move;
+
+            if (multipv_k == 1 && !limits_.infinite) {
+                res.total_nodes = nodes_;
+                res.elapsed_ms = now_ms() - start_time_ms_;
                 return res;
             }
         }
@@ -1130,7 +1246,19 @@ SearchResult Searcher::search(
 
         bool depth_aborted = false;
 
-        if (multipv_k == 1 && d >= 5 && std::abs(prev_score) < 2000) {
+        if (root_mate_found) {
+            PVLine line1;
+            line1.multipv_rank = 1;
+            line1.depth = std::max(d, root_mate_ply);
+            line1.score = root_mate_score;
+            line1.nodes = nodes_;
+            line1.time_ms = std::max<int64_t>(1, now_ms() - start_time_ms_);
+            line1.pv = root_mate_pv;
+            depth_lines.push_back(line1);
+            excluded_first.push_back(root_mate_move);
+        }
+
+        if (!root_mate_found && multipv_k == 1 && d >= 5 && std::abs(prev_score) < 2000) {
             int delta = 35;
             int asp_alpha = std::max(-SCORE_INFINITE, prev_score - delta);
             int asp_beta = std::min(SCORE_INFINITE, prev_score + delta);
@@ -1316,7 +1444,8 @@ SearchResult Searcher::search(
                 }
             }
         } else {
-            for (int pv_idx = 0; pv_idx < multipv_k; ++pv_idx) {
+            int start_pv_idx = root_mate_found ? 1 : 0;
+            for (int pv_idx = start_pv_idx; pv_idx < multipv_k; ++pv_idx) {
                 int best_score = -SCORE_INFINITE;
                 Move best_m = Move::none();
                 std::vector<Move> best_pv;

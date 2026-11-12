@@ -58,11 +58,12 @@
 - [x] T25 — Chiếu hết 5 nước (Hình 2) | MATE(5 ply) — PASS (`bestmove = T*i8^`, `score = mate 3`)
 - [x] T26 — Chiếu hết chuỗi dài (Hình 1) | MATE(<= 9 ply) / UNVERIFIED — SKIPPED per spec (chưa có lời giải xác nhận độc lập)
 - [x] T27 — Chiếu hết chuỗi dài (Hình 2) | MATE(7 ply) — PASS (`bestmove = P*i5`, `score = mate 7`)
-- [x] T28 — Chiếu hết chuỗi dài 15 ply (Lượt: XANH, `ply = 119`) | MATE(15 ply) — PASS (`bestmove = K*a3<`, `score = mate 15`, GĐ1 Tsume AND/OR `mate.cpp` + `Homei_v1-1.exe`)
+- [x] T28 — Chiếu hết chuỗi dài 15 ply (Lượt: XANH, `ply = 119`) | MATE(15 ply) — PASS (`bestmove = K*a3<`, `score = mate 15`, `pv_len = 15`, `time = 160 ms`, `Homei_v2-2.exe`)
   - LPPN: `lppn1 1B2B26/2S2S2V21T21P2/2B2B2B2B21B21/6b02/3B21P23/9/L24b0b0b0b0/3t0x11B11x0/8v0 x -/- TKKXBBB/TSSKKXLB 119`
-  - Kết quả đo thực tế (`Homei.exe`, 5s):
-    - Tại thế gốc (ply 119, trước nước xanh `K*a3<`): `bestmove = B*a5v`, `score = cp -1035` (CHƯA thấy mate).
-    - Sau nước vàng `9. Sb1v` (`ply = 128`, lượt CAM): `bestmove = Vd2`, `score = mate -3`, PV 6 ply `Vd2 P*c1 Ve1 T*f1^ Vd1 B*e1^` (TỰ ĐỌC RA MATE).
+  - Kết quả đo thực tế (`Homei_v2-2.exe`, 5s):
+    - Tại thế gốc (ply 119, lượt XANH): `bestmove = K*a3<`, `score = mate 15`, `pv_len = 15`, thời gian 160 ms. Chuỗi PV: `K*a3< Va4 T*b5^ Va3 S*a4> Va2 Sb3> Vb3 T*a3> Va3 L*b3 Va2 S*b2^ Vb3 X*b4>#`
+    - Nhánh phòng thủ Ta3< (`Ta3< -> Kc3< -> Va4/Va5/Va6/Vb4`): Đều giải ra đường thắng/sát cục tiếp theo đúng luật.
+    - Sau nước vàng `9. Sb1v` (`ply = 128`, lượt CAM): Cả 4 nước chạy Vương của CAM (`Vd2`, `Vd1`, `Vb1`, `Vb2`) đều được XANH chiếu hết chính xác (`11. P*c1`, `11. K*f1v`, `11. L*a1`, `11. T*a1<#`).
   - Đáp án trong ảnh (đã đối chiếu `ref.clp.rules` và `homei.exe`):
     - Mở đầu (nước 1–9): `1. K*a3<` *(màu xanh)* → `2. Va4` *(hoặc `2. Vb4` đều gặp `3. S*b5>`; còn thiếu `2. Va6` → `3. S*b5^#` và `2. Va5` → `3. T*b5^#`; nếu `2. Ta3< / Ta3> / Ta3v` → `3. K*c3<` → `4. Va6` [`S*b5^#`] / `4. Va5` [`T*b5^#`] / `4. Va4` [`T*b5> Vb3 S*c3^ Va2 S*b2^#`] / `4. Vb4` \[vàng, chưa đi tiếp; `homei.exe` 4s: `L*b2`, `-504 cp`\] / ~~`4. Vb5`~~ \[bất hợp lệ\])* → `3. S*b5>` → `4. Va3` *(còn thiếu `4. Va5` → `5. S*a4<#`)* → `5. X*a4>` → `6. Vb2` → `7. S*a1v` → `8. Vc1` → `9. Sb1v` *(màu vàng, nước đi từ `a1` lên `b1`)*.
     - Các nhánh sau `9. Sb1v` (nước 10–15):
