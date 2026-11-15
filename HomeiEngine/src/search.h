@@ -107,6 +107,8 @@ public:
         const InfoCallback& on_info = nullptr
     );
 
+    int extract_qleaf(const Position& start_pos, Position& out_leaf_pos, int& out_qply_len);
+
 private:
 #ifdef HOMEI_STATS
     SearchStats stats_;

@@ -1,17 +1,24 @@
-# Build intermediates
-HomeiEngine/build/*.dir/
-HomeiEngine/build/CMakeFiles/
-HomeiEngine/build/x64/
-HomeiEngine/build/Debug/
-HomeiEngine/build/Release/
-HomeiEngine/build/*.vcxproj*
-HomeiEngine/build/*.sln
-HomeiEngine/build/CMakeCache.txt
-HomeiEngine/build/cmake_install.cmake
+# Build & binaries
+HomeiEngine/build/
+*.exe
+*.pdb
+*.obj
+*.lib
+*.dll
+*.rar
+*.zip
 
-# Test / run artifacts
+# Runtime, training data, games, backups
+data/
 games/
+run/
+source_backups/
+
+# Python & caches
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .pytest_cache/
 *.log
+*.jsonl
+*.hb

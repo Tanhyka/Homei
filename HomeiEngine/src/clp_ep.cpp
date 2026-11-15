@@ -51,6 +51,9 @@ static std::string get_engine_name() {
             if (stem == "homei" || stem == "clp_core_cli") {
                 return "Homei";
             }
+            if (stem == "Homei_v3-2") {
+                return "Homei v3-2";
+            }
             return stem;
         }
     }
@@ -522,6 +525,118 @@ private:
             std::lock_guard<std::mutex> lock(out_mutex_);
             print_piecevalues(std::cout);
             std::cout << std::flush;
+            return true;
+        }
+        if (cmd == "evalterms" || cmd.rfind("evalterms ", 0) == 0) {
+            stop_active_search();
+            Position pos = current_state_.position;
+            if (cmd.size() > 10) {
+                std::string lppn_str = cmd.substr(10);
+                size_t p = lppn_str.find_first_not_of(" \t");
+                if (p != std::string::npos) {
+                    lppn_str = lppn_str.substr(p);
+                    int ply = 0;
+                    std::string err;
+                    if (!parse_lppn(lppn_str, pos, ply, err, true)) {
+                        send_error(err);
+                        return true;
+                    }
+                }
+            }
+            std::lock_guard<std::mutex> lock(out_mutex_);
+            print_evalterms(pos, std::cout);
+            std::cout << std::flush;
+            return true;
+        }
+        if (cmd.rfind("reloadparams ", 0) == 0) {
+            stop_active_search();
+            std::string path = cmd.substr(13);
+            size_t p = path.find_first_not_of(" \t");
+            if (p != std::string::npos) path = path.substr(p);
+            if (!load_eval_params_file(path)) {
+                send_error("Failed to load params file");
+                return true;
+            }
+            send_line("paramsok");
+            return true;
+        }
+        if (cmd.rfind("qcheck ", 0) == 0) {
+            stop_active_search();
+            std::string lppn_str = cmd.substr(7);
+            size_t p = lppn_str.find_first_not_of(" \t");
+            if (p == std::string::npos) {
+                send_error("Missing LPPN for qcheck");
+                return true;
+            }
+            lppn_str = lppn_str.substr(p);
+            Position pos;
+            int ply = 0;
+            std::string err;
+            if (!parse_lppn(lppn_str, pos, ply, err, true)) {
+                send_error(err);
+                return true;
+            }
+            bool in_chk = is_in_check(pos, static_cast<Side>(pos.side_to_move));
+            int ev = evaluate(pos);
+            Position leaf_pos;
+            int qply_len = 0;
+            int qs = searcher_.extract_qleaf(pos, leaf_pos, qply_len);
+            std::string leaf_lppn;
+            if (!format_lppn(leaf_pos, ply + qply_len, leaf_lppn, err, false)) {
+                send_error(err);
+                return true;
+            }
+            std::ostringstream oss;
+            oss << "qcheck " << (in_chk ? 1 : 0) << ' ' << ev << ' ' << qs << ' ' << qply_len << ' ' << leaf_lppn;
+            send_line(oss.str());
+            return true;
+        }
+        if (cmd.rfind("qleaf ", 0) == 0) {
+            stop_active_search();
+            std::string rest = cmd.substr(6);
+            size_t p = rest.find_first_not_of(" \t");
+            if (p == std::string::npos) {
+                send_error("Missing arguments for qleaf");
+                return true;
+            }
+            rest = rest.substr(p);
+            size_t last_sp = rest.find_last_of(" \t");
+            if (last_sp == std::string::npos) {
+                send_error("Missing move notation for qleaf");
+                return true;
+            }
+            std::string lppn_str = rest.substr(0, last_sp);
+            std::string move_str = rest.substr(last_sp + 1);
+            size_t lp_end = lppn_str.find_last_not_of(" \t");
+            if (lp_end != std::string::npos) lppn_str.resize(lp_end + 1);
+
+            Position pos;
+            int ply = 0;
+            std::string err;
+            if (!parse_lppn(lppn_str, pos, ply, err, true)) {
+                send_error(err);
+                return true;
+            }
+            Move mv;
+            if (!parse_canonical_notation(pos, move_str, mv, err)) {
+                send_error("illegal move");
+                return true;
+            }
+            UndoState u;
+            apply_move(pos, mv, u);
+            ++ply;
+
+            Position leaf_pos;
+            int qply_len = 0;
+            int qs = searcher_.extract_qleaf(pos, leaf_pos, qply_len);
+            std::string leaf_lppn;
+            if (!format_lppn(leaf_pos, ply + qply_len, leaf_lppn, err, false)) {
+                send_error(err);
+                return true;
+            }
+            std::ostringstream oss;
+            oss << "qleaf " << (-qs) << ' ' << qply_len << ' ' << leaf_lppn;
+            send_line(oss.str());
             return true;
         }
         if (cmd == "bench" || cmd.rfind("bench ", 0) == 0) {

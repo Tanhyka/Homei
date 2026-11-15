@@ -17,21 +17,22 @@ if str(HOMEI_ROOT) not in sys.path:
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
-from clp_ep_client import CLPEPClient, build_state_from_lppn_and_moves
+from clp_ep_client import build_state_from_lppn_and_moves
 from ref.clp import board as clp_board
 from ref.clp import core_bridge
 from ref.clp import lppn as clp_lppn
 from ref.clp import pieces as clp_pieces
 from ref.clp import rules as clp_rules
+from tools.safe_proc import SafeEngineClient
 
 
-DEFAULT_ENGINE = HOMEI_ROOT / "HomeiEngine" / "build" / "Engine realese" / "Homei_v1.exe"
+DEFAULT_ENGINE = HOMEI_ROOT / "HomeiEngine" / "build" / "Engine realese" / "Homei_v3.exe"
 DEFAULT_OUT = HOMEI_ROOT / "openings.txt"
 
 
-def eval_depth(client: CLPEPClient, state: dict, depth: int = 4) -> Tuple[str, Optional[int]]:
-    """Evaluate a position at fixed depth using CLP-EP client. Returns (kind, value)."""
-    out = client.search_movetime(state, movetime_ms=10000, depth=depth, nodes=50000000, multipv=1)
+def eval_depth(client: SafeEngineClient, state: dict, depth: int = 4) -> Tuple[str, Optional[int]]:
+    """Evaluate a position at fixed depth using SafeEngineClient. Returns (kind, value)."""
+    out = client.search_fixed_depth(state, depth=depth, multipv=1, movetime_ms=10000)
     infos = [i for i in out.infos if i.get("multipv", 1) == 1]
     if not infos:
         return "unknown", None
@@ -62,7 +63,7 @@ def generate_openings(
     rejected_score = 0
 
     t0 = time.perf_counter()
-    with CLPEPClient(engine_path) as client:
+    with SafeEngineClient(engine_path) as client:
         while len(accepted) < count:
             attempts += 1
             b = clp_board.Board()

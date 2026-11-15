@@ -1,0 +1,14 @@
+{
+  "engine": "E:\\code5\\CLP_engine\\Homei\\HomeiEngine\\build\\Engine realese\\Homei_v3.exe",
+  "positions": 200,
+  "min_ms": 0.039,
+  "median_ms": 0.182,
+  "mean_ms": 0.215,
+  "p95_ms": 0.244,
+  "p99_ms": 0.643,
+  "max_ms": 3.57,
+  "over_200ms_count": 0,
+  "over_200ms_pct": 0.0,
+  "passed": true,
+  "over_200ms_details": []
+}

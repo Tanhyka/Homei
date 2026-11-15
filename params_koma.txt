@@ -1,0 +1,23 @@
+# Homei_v3-2 Koma-gumi Evaluation Parameters (integer centipawn weights)
+stack_base 10
+stack_battery 20
+binh_rel_row 3
+binh_forward 6
+binh_guard_long_king 14
+binh_king_shield_front 36
+binh_king_shield_side 10
+tuong_si_ki_rel_row 3
+center_col_weight 2
+step_attack_enemy 12
+long_phuong_active_rank 18
+xa_forward 6
+koma_dead_all_out 26
+koma_dead_part_vec 5
+koma_dead_binh_home 24
+koma_buried_home 47
+koma_buried_no_ray 30
+koma_mobile_battery 8
+koma_slider_mob_base 1
+koma_slider_mob_prime 1
+koma_xa_rel_row 5
+koma_undeveloped_ki_si 10

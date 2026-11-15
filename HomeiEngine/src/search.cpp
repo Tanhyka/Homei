@@ -103,6 +103,46 @@ bool is_passive_rotate(const Position& pos, const Move& m, Side enemy, int enemy
     return true;
 }
 
+bool is_bad_koma_quiet(const Position& pos, const Move& m, Side stm) {
+    if (m.kind == MoveKind::Drop) return false;
+    int end_sq = (m.kind == MoveKind::Rotate) ? m.src : m.dst;
+    if (m.src < 0 || m.src >= NUM_SQUARES || end_sq < 0 || end_sq >= NUM_SQUARES) return false;
+    const Cell& sc = pos.cell[m.src];
+    if (sc.empty()) return false;
+
+    int r_end = sq_row(end_sq);
+    int c_end = sq_col(end_sq);
+    int rel_row = (stm == CAM) ? r_end : (8 - r_end);
+    uint8_t end_f = static_cast<uint8_t>((sc.top().facing + m.rotate_after) & 3);
+
+    // 1. In-place rotation of BINH in home territory (rel_row <= 3)
+    if (m.kind == MoveKind::Rotate && m.ptype == BINH && rel_row <= 3) {
+        return true;
+    }
+
+    // 2. Rotating or moving BINH, KI, SI, XA so its facing points directly out of the board
+    if (m.ptype == BINH || m.ptype == KI || m.ptype == SI || m.ptype == XA) {
+        const PieceMoveTable& tbl = get_piece_moves(m.ptype, end_f);
+        int in_board_vecs = 0;
+        for (int i = 0; i < tbl.count; ++i) {
+            if (in_bounds(r_end + tbl.vecs[i].dr, c_end + tbl.vecs[i].dc)) {
+                ++in_board_vecs;
+            }
+        }
+        if (in_board_vecs == 0) {
+            return true;
+        }
+        if (m.ptype == SI && (m.kind == MoveKind::Rotate || m.rotate_after != 0)) {
+            int dr_f = (end_f == 0) ? -1 : ((end_f == 2) ? 1 : 0);
+            int dc_f = (end_f == 1) ? 1 : ((end_f == 3) ? -1 : 0);
+            if (!in_bounds(r_end + dr_f, c_end + dc_f)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool drop_threatens_enemy(const Position& pos, const Move& m, Side enemy, int enemy_king) {
     if (m.kind != MoveKind::Drop || m.dst < 0 || m.dst >= NUM_SQUARES) return false;
     if (enemy_king >= 0 && enemy_king < NUM_SQUARES &&
@@ -436,6 +476,14 @@ void Searcher::score_moves(Position& pos, const MoveList& list, int* scores, Mov
             if (ply <= 1 && enemy_king < NUM_SQUARES) {
                 if (piece_attacks_sq(pos, end_sq, m.ptype, end_f, enemy_king)) {
                     sc += 360000;
+                }
+            }
+            if (EngineFeatures::get().koma_search && sc < 180000) {
+                bool is_kil = (ply < MAX_PLY && (m == killers_[ply][0] || m == killers_[ply][1]));
+                if (!is_kil && !move_may_give_check(pos, m, enemy_king) &&
+                    !(m.src >= 0 && is_attacked(pos, m.src, enemy)) &&
+                    is_bad_koma_quiet(pos, m, stm)) {
+                    sc -= 120000;
                 }
             }
         }
@@ -968,6 +1016,9 @@ int Searcher::pvs(Position& pos, int depth, int alpha, int beta, int ply, bool i
                 }
                 if (mate_threat && reduction > 0) {
                     --reduction;
+                }
+                if (EngineFeatures::get().koma_search && !may_give_chk && is_bad_koma_quiet(pos, m, stm)) {
+                    ++reduction;
                 }
                 reduction = std::clamp(reduction, 0, new_depth - 1);
             }
@@ -1796,6 +1847,62 @@ void Searcher::search_worker(
         }
         if (worker_stop.load(std::memory_order_relaxed)) return;
     }
+}
+
+int Searcher::extract_qleaf(const Position& start_pos, Position& out_leaf_pos, int& out_qply_len) {
+    Position pos = start_pos;
+    for (int s = 0; s < 2; ++s) {
+        if (pos.king_sq[s] >= NUM_SQUARES) {
+            for (int sq = 0; sq < NUM_SQUARES; ++sq) {
+                const Cell& c = pos.cell[sq];
+                for (uint8_t i = 0; i < c.size; ++i) {
+                    if (c.stack[i].type == VUONG && c.stack[i].owner == s) {
+                        pos.king_sq[s] = static_cast<uint8_t>(sq);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    limits_ = SearchLimits{};
+    limits_.infinite = true;
+    limits_.max_nodes = 50000000ULL;
+    stop_flag_ = nullptr;
+    abort_ = false;
+    current_root_depth_ = 1;
+    nodes_ = 0;
+    start_time_ms_ = now_ms();
+    hard_limit_ms_ = 1000000000LL;
+    base_rep_.clear();
+    mate_rep_.clear();
+    path_hashes_[0] = pos.zobrist;
+    pv_length_[0] = 0;
+
+    int qscore = qsearch(pos, -SCORE_INFINITE, SCORE_INFINITE, 0, 0);
+
+    Position sim = pos;
+    int applied = 0;
+    for (int k = 0; k < pv_length_[0]; ++k) {
+        const Move& pm = pv_table_[0][k];
+        MoveList sim_legal;
+        generate_legal_moves(sim, sim_legal);
+        bool found = false;
+        for (int li = 0; li < sim_legal.count; ++li) {
+            if (sim_legal.moves[li] == pm) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) break;
+        UndoState u;
+        apply_move(sim, pm, u);
+        ++applied;
+    }
+
+    out_leaf_pos = sim;
+    out_qply_len = applied;
+    return qscore;
 }
 
 } // namespace homei
