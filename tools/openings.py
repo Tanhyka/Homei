@@ -48,6 +48,7 @@ def generate_openings(
     eval_depth_n: int = 4,
     engine_path: Path = DEFAULT_ENGINE,
     out_path: Path = DEFAULT_OUT,
+    exclude_path: Optional[Path] = None,
 ) -> List[Tuple[str, List[str], int]]:
     rng = random.Random(seed)
 
@@ -56,6 +57,15 @@ def generate_openings(
     start_lppn = clp_lppn.to_lppn(base_b, clp_pieces.Player.CAM, ply=0, strict=True)
 
     seen_lppn: set[str] = set()
+    if exclude_path and exclude_path.is_file():
+        for raw in exclude_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            lppn_str = line.split("\t", 1)[0].strip()
+            if lppn_str:
+                seen_lppn.add(lppn_str)
+        print(f"[openings] Loaded {len(seen_lppn)} excluded LPPNs from {exclude_path}")
     accepted: List[Tuple[str, List[str], int]] = []
     attempts = 0
     rejected_terminal = 0
@@ -124,6 +134,7 @@ def generate_openings(
                 )
 
     lines = [f"{lppn}\t{' '.join(moves)}" for lppn, moves, _ in accepted]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     dt = time.perf_counter() - t0
     print(
@@ -143,6 +154,7 @@ def main() -> int:
     parser.add_argument("--depth", type=int, default=4)
     parser.add_argument("--engine", type=Path, default=DEFAULT_ENGINE)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--exclude", type=Path, default=None)
     args = parser.parse_args()
 
     generate_openings(
@@ -153,6 +165,7 @@ def main() -> int:
         eval_depth_n=args.depth,
         engine_path=args.engine,
         out_path=args.out,
+        exclude_path=args.exclude,
     )
     return 0
 
