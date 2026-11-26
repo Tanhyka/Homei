@@ -23,7 +23,9 @@ bool has_any_legal_evasion(Position& pos);
 
 struct MateResult {
     bool found = false;
-    int mate_ply = 0; // total plies (Shogi-style: odd = attacker moves, 1 = immediate mate)
+    bool proved_shortest = false;
+    bool rep_dependent = false;
+    int mate_ply = 0; // total plies (checkmate = odd, forced rep3 = even)
     uint64_t nodes = 0;
     bool aborted = false;
     uint32_t root_pn = 1;
@@ -36,6 +38,9 @@ struct RepHashEntry {
     int count;
 };
 
+// Clear / invalidate thread-local DF-PN transposition table and leaf cache.
+void clear_dfpn_tt();
+
 // Bounded AND/OR Tsume solver up to `max_ply` plies from `root_pos`.
 MateResult solve_mate(
     const Position& root_pos,
@@ -43,19 +48,25 @@ MateResult solve_mate(
     int64_t time_budget_ms = 80,
     uint64_t max_nodes = 5000000ULL,
     const std::atomic<bool>* stop_flag = nullptr,
-    const std::vector<RepHashEntry>* base_rep = nullptr
+    const std::vector<RepHashEntry>* base_rep = nullptr,
+    bool find_shortest = true,
+    bool reuse_tt = true,
+    const Move* excluded_moves = nullptr,
+    int num_excluded = 0,
+    std::atomic<uint64_t>* live_nodes_counter = nullptr
 );
 
 // Convenience signature matching spec.
 bool solve_mate(const Position& root_pos, int max_ply, Move& out_best_move, int& out_mate_ply);
 
-// Fast mate-in-1 scanner on static MoveList.
+// Fast mate-in-1 scanner on thread-local MoveList.
 bool has_mate_in_1(
     Position& pos,
     Move& out_move,
     const uint64_t* path_hashes = nullptr,
     int ply = 0,
-    const std::vector<RepHashEntry>* base_rep = nullptr
+    const std::vector<RepHashEntry>* base_rep = nullptr,
+    int8_t known_in_check = -1
 );
 
 // Lightweight bounded df-pn for PV nodes with search-path history.

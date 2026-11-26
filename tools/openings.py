@@ -26,7 +26,7 @@ from ref.clp import rules as clp_rules
 from tools.safe_proc import SafeEngineClient
 
 
-DEFAULT_ENGINE = HOMEI_ROOT / "HomeiEngine" / "build" / "Engine realese" / "Homei_v3.exe"
+DEFAULT_ENGINE = HOMEI_ROOT / "HomeiEngine" / "build" / "homei.exe"
 DEFAULT_OUT = HOMEI_ROOT / "openings.txt"
 
 

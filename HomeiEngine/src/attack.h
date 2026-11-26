@@ -1,119 +1,204 @@
 #pragma once
 
-#include "types.h"
+#include "bitboard.h"
 #include "geometry.h"
+#include "types.h"
 
 namespace homei {
 
-struct ReverseAttackEntry {
-    uint8_t src_sq = 0;
-    uint8_t ptype_mask_by_facing[4]{}; // bitmask of PieceType (1 << pt) for each facing 0..3
-};
+inline void init_attack_tables() {
+    init_homei_tables();
+}
 
-struct ReverseAttackList {
-    uint8_t count = 0;
-    ReverseAttackEntry entries[24]{};
-};
-
-inline ReverseAttackList g_rev_step_jump[NUM_SQUARES];
-inline uint8_t g_ray_ortho[NUM_SQUARES][4][10];
-inline uint8_t g_ray_diag[NUM_SQUARES][4][10];
-inline bool g_attack_init = false;
-
-void init_attack_tables();
-
-// Fast check if piece (ptype, facing) placed at `from_sq` attacks `target_sq` on `pos`.
+// Fast bitboard check if piece (ptype, facing) placed at `from_sq` attacks `target_sq` on `pos`.
 inline bool piece_attacks_sq(const Position& pos, int from_sq, uint8_t ptype, uint8_t facing, int target_sq) {
-    if (from_sq < 0 || from_sq >= NUM_SQUARES || from_sq == target_sq) return false;
-    const PieceMoveTable& tbl = get_piece_moves(ptype, facing);
-    int r0 = sq_row(from_sq);
-    int c0 = sq_col(from_sq);
-    int rt = sq_row(target_sq);
-    int ct = sq_col(target_sq);
+    if (from_sq < 0 || from_sq >= NUM_SQUARES || target_sq < 0 || target_sq >= NUM_SQUARES || from_sq == target_sq) {
+        return false;
+    }
+    if (ptype == LONG) {
+        if (!BB_ORTHO_MASK[from_sq].test_bit(target_sq)) return false;
+        return ortho_attacks(from_sq, pos.bb_occ).test_bit(target_sq);
+    }
+    if (ptype == PHUONG) {
+        if (!BB_DIAG_MASK[from_sq].test_bit(target_sq)) return false;
+        return diag_attacks(from_sq, pos.bb_occ).test_bit(target_sq);
+    }
+    if (ptype == XA) {
+        uint8_t f = facing & 3;
+        if (!BB_RAY_ORTHO[from_sq][f].test_bit(target_sq)) return false;
+        return ray_ortho_attack(from_sq, f, pos.bb_occ).test_bit(target_sq);
+    }
+    return BB_STEP_ATTACKS[ptype][facing & 3][from_sq].test_bit(target_sq);
+}
 
-    for (int i = 0; i < tbl.count; ++i) {
-        const MoveVec& mv = tbl.vecs[i];
-        if (!mv.sliding) {
-            if (r0 + mv.dr == rt && c0 + mv.dc == ct) {
+// Fast bitboard reverse-lookup attack check under custom occupancy `occ` (e.g. king removed for king evasion check).
+// Uses ONE ortho_attacks call to check both LONG and XA, and skips sliders during step-piece loop.
+inline bool is_attacked_with_occ(const Position& pos, int target_sq, Side by_side, const Bitboard& occ) {
+    if (target_sq < 0 || target_sq >= NUM_SQUARES) return false;
+
+    const Bitboard side_bb = pos.bb_side[by_side];
+    const Bitboard bb_l = side_bb & pos.bb_type[LONG];
+    const Bitboard bb_p = side_bb & pos.bb_type[PHUONG];
+    const Bitboard bb_x = side_bb & pos.bb_type[XA];
+
+    // 1. Step and jump pieces (V, T, S, K, B) inside 5x5 local zone
+    Bitboard step_cands = (side_bb & ~(bb_l | bb_p | bb_x)) & BB_STEP_ZONE[target_sq];
+    while (step_cands.any()) {
+        int ssq = step_cands.pop_lsb();
+        const Piece top = pos.top_piece[ssq];
+        if (BB_STEP_ATTACKS[top.type][top.facing][ssq].test_bit(target_sq)) {
+            return true;
+        }
+    }
+
+    // 2. LONG + XA via single branchless ortho_attacks call
+    const Bitboard bb_lx = bb_l | bb_x;
+    if ((BB_ORTHO_MASK[target_sq] & bb_lx).any()) {
+        const Bitboard ortho = ortho_attacks(target_sq, occ);
+        if ((ortho & bb_l).any()) return true;
+        Bitboard xa_hits = ortho & bb_x;
+        while (xa_hits.any()) {
+            int xsq = xa_hits.pop_lsb();
+            if (BB_RAY_ORTHO[xsq][pos.top_piece[xsq].facing].test_bit(target_sq)) {
                 return true;
-            }
-        } else {
-            int nr = r0 + mv.dr;
-            int nc = c0 + mv.dc;
-            while (in_bounds(nr, nc)) {
-                int s = make_sq(nr, nc);
-                if (s == target_sq) return true;
-                if (!pos.cell[s].empty()) break;
-                nr += mv.dr;
-                nc += mv.dc;
             }
         }
     }
+
+    // 3. PHUONG via single branchless diag_attacks call
+    if ((BB_DIAG_MASK[target_sq] & bb_p).any()) {
+        if ((diag_attacks(target_sq, occ) & bb_p).any()) {
+            return true;
+        }
+    }
+
     return false;
 }
 
-// Fast reverse-lookup attack check: returns true if any top piece of `by_side`
-// has `target_sq` as a raw destination (empty, capture, or own).
 inline bool is_attacked(const Position& pos, int target_sq, Side by_side) {
-    if (!g_attack_init) init_attack_tables();
-    if (target_sq < 0 || target_sq >= NUM_SQUARES) return false;
+    return is_attacked_with_occ(pos, target_sq, by_side, pos.bb_occ);
+}
 
-    // 1. Step and jump attacks via reverse lookup
-    const auto& list = g_rev_step_jump[target_sq];
-    for (uint8_t i = 0; i < list.count; ++i) {
-        const auto& e = list.entries[i];
-        const Cell& c = pos.cell[e.src_sq];
-        if (!c.empty()) {
-            const Piece& top = c.top();
-            if (top.owner == by_side && (e.ptype_mask_by_facing[top.facing] & (1U << top.type))) {
-                return true;
+// Returns bitboard of ALL pieces of `by_side` attacking `target_sq` under occupancy `occ`.
+inline Bitboard attackers_to_side_bb(const Position& pos, int target_sq, Side by_side, const Bitboard& occ) {
+    Bitboard res;
+    if (target_sq < 0 || target_sq >= NUM_SQUARES) return res;
+
+    const Bitboard side_bb = pos.bb_side[by_side] & occ;
+    const Bitboard bb_l = side_bb & pos.bb_type[LONG];
+    const Bitboard bb_p = side_bb & pos.bb_type[PHUONG];
+    const Bitboard bb_x = side_bb & pos.bb_type[XA];
+
+    Bitboard step_cands = (side_bb & ~(bb_l | bb_p | bb_x)) & BB_STEP_ZONE[target_sq];
+    while (step_cands.any()) {
+        int ssq = step_cands.pop_lsb();
+        const Piece top = pos.top_piece[ssq];
+        if (BB_STEP_ATTACKS[top.type][top.facing][ssq].test_bit(target_sq)) {
+            res.set_bit(ssq);
+        }
+    }
+
+    if ((BB_ORTHO_MASK[target_sq] & (bb_l | bb_x)).any()) {
+        const Bitboard ortho = ortho_attacks(target_sq, occ);
+        res |= (ortho & bb_l);
+        Bitboard xa_hits = ortho & bb_x;
+        while (xa_hits.any()) {
+            int xsq = xa_hits.pop_lsb();
+            if (BB_RAY_ORTHO[xsq][pos.top_piece[xsq].facing].test_bit(target_sq)) {
+                res.set_bit(xsq);
             }
         }
     }
 
-    // 2. 4 orthogonal rays (LONG and XA)
-    for (int dir = 0; dir < 4; ++dir) {
-        const uint8_t* ray = g_ray_ortho[target_sq][dir];
-        for (int step = 0; ray[step] != 255; ++step) {
-            const Cell& cell = pos.cell[ray[step]];
-            if (!cell.empty()) {
-                const Piece& top = cell.top();
-                if (top.owner == by_side) {
-                    if (top.type == LONG) return true;
-                    if (top.type == XA && top.facing == dir) return true;
-                }
-                break;
+    if ((BB_DIAG_MASK[target_sq] & bb_p).any()) {
+        res |= (diag_attacks(target_sq, occ) & bb_p);
+    }
+
+    return res;
+}
+
+// Returns bitboard of ALL pieces (BOTH sides) attacking `target_sq` under occupancy `occ` in ONE pass.
+inline Bitboard attackers_to_both_bb(const Position& pos, int target_sq, const Bitboard& occ) {
+    Bitboard res;
+    if (target_sq < 0 || target_sq >= NUM_SQUARES) return res;
+
+    const Bitboard bb_l = pos.bb_type[LONG] & occ;
+    const Bitboard bb_p = pos.bb_type[PHUONG] & occ;
+    const Bitboard bb_x = pos.bb_type[XA] & occ;
+
+    Bitboard step_cands = (occ & ~(bb_l | bb_p | bb_x)) & BB_STEP_ZONE[target_sq];
+    while (step_cands.any()) {
+        int ssq = step_cands.pop_lsb();
+        const Piece top = pos.top_piece[ssq];
+        if (BB_STEP_ATTACKS[top.type][top.facing][ssq].test_bit(target_sq)) {
+            res.set_bit(ssq);
+        }
+    }
+
+    if ((BB_ORTHO_MASK[target_sq] & (bb_l | bb_x)).any()) {
+        const Bitboard ortho = ortho_attacks(target_sq, occ);
+        res |= (ortho & bb_l);
+        Bitboard xa_hits = ortho & bb_x;
+        while (xa_hits.any()) {
+            int xsq = xa_hits.pop_lsb();
+            if (BB_RAY_ORTHO[xsq][pos.top_piece[xsq].facing].test_bit(target_sq)) {
+                res.set_bit(xsq);
             }
         }
     }
 
-    // 3. 4 diagonal rays (PHUONG)
-    for (int dir = 0; dir < 4; ++dir) {
-        const uint8_t* ray = g_ray_diag[target_sq][dir];
-        for (int step = 0; ray[step] != 255; ++step) {
-            const Cell& cell = pos.cell[ray[step]];
-            if (!cell.empty()) {
-                const Piece& top = cell.top();
-                if (top.owner == by_side && top.type == PHUONG) {
-                    return true;
-                }
-                break;
+    if ((BB_DIAG_MASK[target_sq] & bb_p).any()) {
+        res |= (diag_attacks(target_sq, occ) & bb_p);
+    }
+
+    return res;
+}
+
+// Computes all pieces that are the SOLE blocker between `king_side`'s King and an enemy slider sniper.
+// Populates `out_pinners` with the enemy snipers pinning at least one `king_side` piece.
+inline Bitboard slider_blockers(const Position& pos, Side king_side, Bitboard& out_pinners) {
+    out_pinners.clear_all();
+    int ksq = pos.king_sq[king_side];
+    if (ksq >= NUM_SQUARES) return Bitboard{};
+
+    Side enemy = other_side(king_side);
+    const Bitboard enemy_bb = pos.bb_side[enemy];
+    Bitboard snipers =
+        (BB_ORTHO_MASK[ksq] & enemy_bb & (pos.bb_type[LONG] | pos.bb_type[XA])) |
+        (BB_DIAG_MASK[ksq]  & enemy_bb & pos.bb_type[PHUONG]);
+
+    Bitboard blockers;
+    while (snipers.any()) {
+        int ssq = snipers.pop_lsb();
+        const Piece sp = pos.top_piece[ssq];
+        if (sp.type == XA && !BB_RAY_ORTHO[ssq][sp.facing].test_bit(ksq)) {
+            continue;
+        }
+        Bitboard between = BB_BETWEEN[ksq][ssq] & pos.bb_occ;
+        if (between.any() && !between.more_than_one()) {
+            blockers |= between;
+            if ((between & pos.bb_side[king_side]).any()) {
+                out_pinners.set_bit(ssq);
             }
         }
     }
+    return blockers;
+}
 
-    return false;
+// Returns bitboard of all enemy pieces checking `side`'s VUONG.
+inline Bitboard checkers_bb(const Position& pos, Side side) {
+    uint8_t ksq = pos.king_sq[side];
+    if (ksq >= NUM_SQUARES) return Bitboard{};
+    return attackers_to_side_bb(pos, ksq, other_side(side), pos.bb_occ);
 }
 
 // Returns true if `side`'s VUONG is currently attacked by `other_side(side)`.
 inline bool is_in_check(const Position& pos, Side side) {
     uint8_t ksq = pos.king_sq[side];
     if (ksq >= NUM_SQUARES) {
-        // Fallback scan if king_sq wasn't cached
-        for (int sq = 0; sq < NUM_SQUARES; ++sq) {
-            if (!pos.cell[sq].empty() && pos.cell[sq].top().owner == side && pos.cell[sq].top().type == VUONG) {
-                return is_attacked(pos, sq, other_side(side));
-            }
+        Bitboard kb = pos.bb_side[side] & pos.bb_type[VUONG];
+        if (kb.any()) {
+            return is_attacked(pos, kb.lsb(), other_side(side));
         }
         return false;
     }

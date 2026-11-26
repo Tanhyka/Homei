@@ -1,15 +1,16 @@
 #include "zobrist.h"
+#include <mutex>
 
 namespace homei {
 
-uint64_t zobrist_cell[MAX_STACK_SIZE][NUM_SQUARES][64];
-uint64_t zobrist_prisoner[2][8][MAX_TOTAL_PIECES + 1];
+uint64_t zobrist_cell[ZOBRIST_FAST_DEPTH][NUM_SQUARES][64];
+uint64_t zobrist_prisoner_unit[2][8];
 uint64_t zobrist_reserve[2][4];
-uint64_t zobrist_side = 0;
+uint64_t zobrist_side = 1ULL;
 
 namespace {
 
-bool g_zobrist_init = false;
+std::once_flag g_zobrist_once;
 
 uint64_t splitmix64(uint64_t& state) {
     uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
@@ -26,53 +27,63 @@ inline uint8_t canonical_code64(const Piece& p) {
 } // namespace
 
 void init_zobrist() {
-    if (g_zobrist_init) return;
-    uint64_t seed = 0x484F4D45495F434CULL; // "HOMEI_CL"
-    for (int d = 0; d < MAX_STACK_SIZE; ++d) {
-        for (int sq = 0; sq < NUM_SQUARES; ++sq) {
-            for (int c = 0; c < 64; ++c) {
-                zobrist_cell[d][sq][c] = splitmix64(seed);
+    std::call_once(g_zobrist_once, []() {
+        uint64_t seed = 0x484F4D45495F5635ULL; // "HOMEI_V5"
+        for (int d = 0; d < ZOBRIST_FAST_DEPTH; ++d) {
+            for (int sq = 0; sq < NUM_SQUARES; ++sq) {
+                for (int c = 0; c < 64; ++c) {
+                    zobrist_cell[d][sq][c] = splitmix64(seed) & ~1ULL;
+                }
             }
         }
-    }
-    for (int s = 0; s < 2; ++s) {
-        for (int pt = 0; pt < 8; ++pt) {
-            zobrist_prisoner[s][pt][0] = 0;
-            for (int cnt = 1; cnt <= MAX_TOTAL_PIECES; ++cnt) {
-                zobrist_prisoner[s][pt][cnt] = splitmix64(seed);
+        for (int s = 0; s < 2; ++s) {
+            for (int pt = 0; pt < 8; ++pt) {
+                zobrist_prisoner_unit[s][pt] = splitmix64(seed) & ~1ULL;
+            }
+            zobrist_reserve[s][0] = 0ULL;
+            for (int m = 1; m < 4; ++m) {
+                zobrist_reserve[s][m] = splitmix64(seed) & ~1ULL;
             }
         }
-        zobrist_reserve[s][0] = 0;
-        for (int m = 1; m < 4; ++m) {
-            zobrist_reserve[s][m] = splitmix64(seed);
-        }
-    }
-    zobrist_side = splitmix64(seed);
-    g_zobrist_init = true;
+        zobrist_side = splitmix64(seed) | 1ULL;
+    });
 }
 
-uint64_t compute_zobrist(const Position& pos) {
-    if (!g_zobrist_init) init_zobrist();
-    uint64_t h = 0;
+void compute_zobrist_split(const Position& pos, uint64_t& out_board_key, uint64_t& out_hand_key) {
+    uint64_t bk = 0;
     for (int sq = 0; sq < NUM_SQUARES; ++sq) {
-        const Cell& c = pos.cell[sq];
-        for (uint8_t d = 0; d < c.size; ++d) {
-            h ^= zobrist_cell[d][sq][canonical_code64(c.stack[d])];
-        }
-    }
-    for (int s = 0; s < 2; ++s) {
-        h ^= zobrist_reserve[s][pos.reserve[s] & 3];
-        for (int pt = 0; pt < 8; ++pt) {
-            uint8_t cnt = pos.prisoners[s][pt];
-            if (cnt <= MAX_TOTAL_PIECES) {
-                h ^= zobrist_prisoner[s][pt][cnt];
+        uint8_t h = pos.height[sq];
+        if (h == 0) continue;
+        bk ^= zobrist_cell_key(static_cast<uint8_t>(h - 1), sq, canonical_code64(pos.top_piece[sq]));
+        if (h >= 2) {
+            int d = static_cast<int>(h) - 2;
+            for (uint8_t idx = pos.buried_head[sq]; idx != BURIED_NONE && d >= 0; idx = pos.buried_next[idx], --d) {
+                bk ^= zobrist_cell_key(static_cast<uint8_t>(d), sq, canonical_code64(pos.buried_piece[idx]));
             }
         }
     }
     if (pos.side_to_move == XANH) {
-        h ^= zobrist_side;
+        bk ^= zobrist_side;
     }
-    return h;
+
+    uint64_t hk = 0;
+    for (int s = 0; s < 2; ++s) {
+        hk += zobrist_reserve[s][pos.reserve[s] & 3];
+        for (int pt = 0; pt < 8; ++pt) {
+            uint8_t cnt = pos.prisoners[s][pt];
+            if (cnt > 0) {
+                hk += static_cast<uint64_t>(cnt) * zobrist_prisoner_unit[s][pt];
+            }
+        }
+    }
+    out_board_key = bk;
+    out_hand_key = hk & ~1ULL; // invariant: bit 0 is always 0 (sum of even numbers is even!)
+}
+
+uint64_t compute_zobrist(const Position& pos) {
+    uint64_t bk = 0, hk = 0;
+    compute_zobrist_split(pos, bk, hk);
+    return bk ^ hk;
 }
 
 } // namespace homei

@@ -81,31 +81,42 @@ def run_t28_check(movetime_ms: int = 5000) -> Tuple[bool, str]:
         sys.path.insert(0, str(TESTS_DIR))
 
     from clp_ep_client import CLPEPClient, build_state_from_lppn
-    from test_tactical_suite import check_mate_pv_terminal, verify_legal_and_pv
+    from test_tactical_suite import (
+        T28_POSITION,
+        check_mate_pv_terminal,
+        make_transformed_tactical_variants,
+        verify_legal_and_pv,
+    )
 
-    state, b, turn = build_state_from_lppn(T28_LPPN)
+    variants = make_transformed_tactical_variants(T28_POSITION)
+    details = []
+    passed = True
     with CLPEPClient() as client:
-        out = client.search_movetime(
-            state, movetime_ms=movetime_ms, depth=32, nodes=50000000, multipv=1
-        )
-        not_str, score_str, pv_len = verify_legal_and_pv(out, b, turn)
-        last_info = [i for i in out.infos if i.get("multipv", 1) == 1][-1]
-        sc = last_info["score"]
-        sc_kind = sc.get("kind")
-        sc_val = int(sc.get("value", 0)) if sc_kind == "mate" else None
-        pv_ok = check_mate_pv_terminal(out, b, turn, 15)
-        passed = (
-            not_str == "K*a3<"
-            and sc_kind == "mate"
-            and sc_val is not None
-            and 13 <= sc_val <= 15
-            and pv_ok
-        )
-        detail = (
-            f"move={not_str}, score={score_str}, pv_len={pv_len}, "
-            f"pv_terminal={pv_ok}, time={out.elapsed_ms:.0f}ms"
-        )
-        return passed, detail
+        for vname, expected_mv in (("orig", "K*a3<"), ("mirror_h", "K*a7>")):
+            lp, _ = variants[vname]
+            state, b, turn = build_state_from_lppn(lp)
+            out = client.search_movetime(
+                state, movetime_ms=movetime_ms, depth=32, nodes=50000000, multipv=1
+            )
+            not_str, score_str, pv_len = verify_legal_and_pv(out, b, turn)
+            last_info = [i for i in out.infos if i.get("multipv", 1) == 1][-1]
+            sc = last_info["score"]
+            sc_kind = sc.get("kind")
+            sc_val = int(sc.get("value", 0)) if sc_kind == "mate" else None
+            pv_ok = check_mate_pv_terminal(out, b, turn, 15)
+            v_ok = (
+                not_str == expected_mv
+                and sc_kind == "mate"
+                and sc_val is not None
+                and 13 <= sc_val <= 15
+                and pv_ok
+            )
+            passed = passed and v_ok
+            details.append(
+                f"{vname}(move={not_str}, score={score_str}, pv_len={pv_len}, "
+                f"pv_terminal={pv_ok}, time={out.elapsed_ms:.0f}ms)"
+            )
+        return passed, " | ".join(details)
 
 
 def main() -> int:
@@ -124,27 +135,33 @@ def main() -> int:
     args = parser.parse_args()
 
     print("=== HomeiEngine Regression Gate ===")
-    progress = parse_test_progress(TEST_PROGRESS_PATH)
+    t28_is_open_in_md = False
+    require_t28 = args.require_t28
+    if TEST_PROGRESS_PATH.is_file():
+        progress = parse_test_progress(TEST_PROGRESS_PATH)
 
-    expected_checked = (
-        [f"Test 0.{i}" for i in range(1, 7)]
-        + [f"Test P.{i}" for i in range(1, 10)]
-        + [f"S{i}" for i in range(1, 9)]
-        + [f"T{i:02d}" for i in range(1, 28)]
-    )
-    missing_or_unchecked = [
-        tag for tag in expected_checked if tag not in progress or not progress[tag].checked
-    ]
-    if missing_or_unchecked:
-        print(f"[FAIL] test_progress.md unchecked/missing baseline items: {missing_or_unchecked}")
-        return 1
+        expected_checked = (
+            [f"Test 0.{i}" for i in range(1, 7)]
+            + [f"Test P.{i}" for i in range(1, 10)]
+            + [f"S{i}" for i in range(1, 9)]
+            + [f"T{i:02d}" for i in range(1, 28)]
+        )
+        missing_or_unchecked = [
+            tag for tag in expected_checked if tag not in progress or not progress[tag].checked
+        ]
+        if missing_or_unchecked:
+            print(f"[FAIL] test_progress.md unchecked/missing baseline items: {missing_or_unchecked}")
+            return 1
 
-    t28_item: Optional[ProgressItem] = progress.get("T28")
-    if t28_item is None:
-        print("[FAIL] T28 entry missing from test_progress.md")
-        return 1
-    t28_is_open_in_md = not t28_item.checked
-    require_t28 = args.require_t28 or (not t28_is_open_in_md)
+        t28_item: Optional[ProgressItem] = progress.get("T28")
+        if t28_item is None:
+            print("[FAIL] T28 entry missing from test_progress.md")
+            return 1
+        t28_is_open_in_md = not t28_item.checked
+        require_t28 = args.require_t28 or (not t28_is_open_in_md)
+    else:
+        print("[INFO] test_progress.md not present; running all suites directly (T28 required).")
+        require_t28 = True
 
     all_ok = True
     for suite in SUITES:
@@ -157,8 +174,7 @@ def main() -> int:
             print(out)
             all_ok = False
 
-    print("\n--- Checking T28 against test_progress.md ---")
-    print(f"test_progress.md T28: checked={t28_item.checked} ({'OPEN' if t28_is_open_in_md else 'CLOSED'})")
+    print("\n--- Checking T28 ---")
     if require_t28:
         t28_ok, t28_detail = run_t28_check(movetime_ms=args.t28_ms)
         print(f"[{'PASS' if t28_ok else 'FAIL'}] T28: {t28_detail}")

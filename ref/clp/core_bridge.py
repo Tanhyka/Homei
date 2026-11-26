@@ -152,7 +152,29 @@ def _decode_move_py(move_dict: dict) -> rules.Move:
     return rules.Move(kind=kind, src=src, dst=dst, ptype=ptype, facing=facing, rotate_after=rot)
 
 
-def _adjudicate_state_py(state: dict) -> None:
+def _all_legal_moves_lead_to_rep3_py(board: Board, turn: Player, entries: List[dict]) -> bool:
+    """Điều 5 (Thiên Nhật Hòa): True iff every legal move from (board, turn) results in count >= 3."""
+    legal = rules.legal_moves(board, turn)
+    if not legal:
+        return False
+    counts_ge2 = {
+        _position_identity_py(e["position"])
+        for e in entries
+        if int(e.get("count", 0)) >= 2
+    }
+    if not counts_ge2:
+        return False
+    next_turn = rules.other(turn)
+    for cand in legal:
+        sim = board.clone()
+        rules.apply_move(sim, turn, cand)
+        cand_id = _position_identity_py(_encode_position_py(sim, next_turn))
+        if cand_id not in counts_ge2:
+            return False
+    return True
+
+
+def _adjudicate_state_py(state: dict, unavoidable_rep3: bool = False) -> None:
     pos_dict = state["position"]
     cur_id = _position_identity_py(pos_dict)
     entries = state["repetition"]["entries"]
@@ -165,6 +187,14 @@ def _adjudicate_state_py(state: dict) -> None:
         raise ValueError("Current history missing")
     board, turn = _decode_position_py(pos_dict)
     if matched["count"] >= 3:
+        if unavoidable_rep3:
+            state["result"] = {
+                "loser": None,
+                "reason": "repetition3_draw",
+                "status": "terminal",
+                "winner": None,
+            }
+            return
         loser = rules.other(turn)
         state["result"] = {
             "loser": loser.name,
@@ -354,6 +384,7 @@ class CoreBridge:
             for m in legal
         ):
             raise ValueError("illegal move")
+        board_before = board.clone()
         rules.apply_move(board, turn, move)
         next_turn = rules.other(turn)
         next_pos = _encode_position_py(board, next_turn)
@@ -363,14 +394,19 @@ class CoreBridge:
         next_id = _position_identity_py(next_pos)
         entries = next_state["repetition"]["entries"]
         found = False
+        new_count = 1
         for entry in entries:
             if _position_identity_py(entry["position"]) == next_id:
                 entry["count"] += 1
+                new_count = entry["count"]
                 found = True
                 break
         if not found:
             entries.append({"count": 1, "position": copy.deepcopy(next_pos)})
-        _adjudicate_state_py(next_state)
+        unavoidable = False
+        if new_count >= 3:
+            unavoidable = _all_legal_moves_lead_to_rep3_py(board_before, turn, state["repetition"]["entries"])
+        _adjudicate_state_py(next_state, unavoidable_rep3=unavoidable)
         return next_state
 
     def reset(self, error: Optional[List[str]] = None) -> bool:

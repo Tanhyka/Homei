@@ -26,7 +26,7 @@ from tools.safe_proc import SafeEngineClient
 from tools.verify_gate import T28_LPPN
 
 
-DEFAULT_ENGINE = HOMEI_ROOT / "HomeiEngine" / "build" / "Engine realese" / "Homei_v3.exe"
+DEFAULT_ENGINE = HOMEI_ROOT / "HomeiEngine" / "build" / "homei.exe"
 
 
 def collect_200_positions(seed: int = 12345) -> List[str]:

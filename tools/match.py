@@ -41,7 +41,7 @@ from tools.safe_proc import (
     max_safe_workers,
 )
 
-EVE_LPGF_ROOT = Path(r"E:\code5\CLP_dataset\LPGF\EvE\Homei_v3_2_vs_v3")
+EVE_LPGF_ROOT = Path(r"E:\all-code\Code1\CLP_dataset\LPGF\EvE\Arena 4")
 
 
 def _startpos_lppn() -> str:
@@ -135,13 +135,14 @@ def _has_siege_ray_py(
     return False
 
 
-def compute_board_koma_snapshot(b: clp_board.Board, side: clp_pieces.Player) -> Tuple[int, int, int]:
-    """Compute (edge_facing_binh_cnt, buried_slider_cnt, has_2_adv_def) for `side` on board `b`."""
+def compute_board_koma_snapshot(b: clp_board.Board, side: clp_pieces.Player) -> Tuple[int, int, int, int]:
+    """Compute (edge_facing_binh_cnt, buried_slider_cnt, has_2_adv_def, has_siege_3x3) for `side` on board `b`."""
     enemy = clp_rules.other(side)
     ek_rc = _find_king_rc(b, enemy)
     edge_binh = 0
     buried = 0
     adv_def_cnt = 0
+    siege_units = 0
 
     for r in range(9):
         rel_row = r if side == clp_pieces.Player.CAM else (8 - r)
@@ -172,7 +173,31 @@ def compute_board_koma_snapshot(b: clp_board.Board, side: clp_pieces.Player) -> 
                     if p.ptype.name in ("SI", "KI", "TUONG"):
                         adv_def_cnt += 1
 
-    return edge_binh, buried, (1 if adv_def_cnt >= 2 else 0)
+            # 4. Siege pressure on enemy King 3x3 zone
+            if ek_rc is not None and pt_name != "VUONG":
+                ekr, ekc = ek_rc
+                manh_ek = abs(r - ekr) + abs(c - ekc)
+                if manh_ek <= 3:
+                    faces_ek = (
+                        pt_name in ("LONG", "PHUONG")
+                        or (f == 0 and ekr < r)
+                        or (f == 2 and ekr > r)
+                        or (f == 1 and ekc > c)
+                        or (f == 3 and ekc < c)
+                    )
+                    if faces_ek:
+                        siege_units += 2 + (2 if len(sq.stack) >= 2 else 0)
+                else:
+                    if pt_name in ("LONG", "PHUONG", "XA") and _has_siege_ray_py(b, (r, c), pt_name, f, ek_rc):
+                        siege_units += 2
+                    elif len(sq.stack) >= 2:
+                        sec = sq.stack[-2]
+                        if sec.ptype.name in ("LONG", "PHUONG", "XA") and _has_siege_ray_py(
+                            b, (r, c), sec.ptype.name, sec.facing, ek_rc
+                        ):
+                            siege_units += 2
+
+    return edge_binh, buried, (1 if adv_def_cnt >= 2 else 0), (1 if siege_units >= 4 else 0)
 
 
 def _match_legal_move(
@@ -242,9 +267,11 @@ def write_lpgf_v2_game_file(
         f"Kỳ Thủ Cầm Cam: {cam_name}",
         f"Kỳ Thủ Cầm Xanh: {xanh_name}",
         "",
-        record_io.format_ascii_board(opening_board, opening_turn, opening_ply),
-        "",
     ]
+    # Only embed ASCII diagram when starting from a non-standard position (matches LPGF 2.0 spec & GUI export)
+    if opening_ply != 0 or clp_lppn.to_lppn(opening_board, opening_turn, ply=0) != STARTPOS_LPPN:
+        lines.append(record_io.format_ascii_board(opening_board, opening_turn, opening_ply))
+        lines.append("")
     lines.extend(lpgf_move_lines)
     lines.append("")
     lpgf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -310,6 +337,7 @@ def play_single_game(task: dict) -> dict:
             "edge_binh_sum": 0,
             "buried_slider_sum": 0,
             "adv_def_sum": 0,
+            "siege_3x3_sum": 0,
         },
         clp_pieces.Player.XANH: {
             "nodes": 0,
@@ -322,6 +350,7 @@ def play_single_game(task: dict) -> dict:
             "edge_binh_sum": 0,
             "buried_slider_sum": 0,
             "adv_def_sum": 0,
+            "siege_3x3_sum": 0,
         },
     }
     played_moves: List[str] = []
@@ -339,7 +368,7 @@ def play_single_game(task: dict) -> dict:
         while True:
             res_obj = state.get("result", {})
             if res_obj.get("status") == "terminal":
-                winner_player = res_obj["winner"]
+                winner_player = res_obj.get("winner") or "DRAW"
                 reason = res_obj["reason"]
                 break
 
@@ -386,31 +415,38 @@ def play_single_game(task: dict) -> dict:
             lpgf_move_lines.append(format_lpgf_v2_move_line(len(played_moves), mv, canon_not))
 
             mover = turn
+            prev_board = b.clone() if any(int(e["count"]) >= 2 for e in rep_map.values()) else None
             clp_rules.apply_move(b, turn, mv)
             turn = clp_rules.other(turn)
             next_ply = int(state["ply"]) + 1
 
             if 12 <= next_ply <= 40:
-                eb, bs, ad = compute_board_koma_snapshot(b, mover)
+                eb, bs, ad, sg = compute_board_koma_snapshot(b, mover)
                 st_mover = stats[mover]
                 st_mover["koma_plies"] += 1
                 st_mover["edge_binh_sum"] += eb
                 st_mover["buried_slider_sum"] += bs
                 st_mover["adv_def_sum"] += ad
+                st_mover["siege_3x3_sum"] += sg
 
             next_pos = core_bridge._encode_position_py(b, turn)
             state["position"] = next_pos
             state["ply"] = next_ply
 
             next_id = core_bridge._position_identity_py(next_pos)
+            unavoidable = False
             if next_id in rep_map:
+                if rep_map[next_id]["count"] >= 2 and prev_board is not None:
+                    unavoidable = core_bridge._all_legal_moves_lead_to_rep3_py(
+                        prev_board, mover, state["repetition"]["entries"]
+                    )
                 rep_map[next_id]["count"] += 1
             else:
                 new_entry = {"count": 1, "position": copy.deepcopy(next_pos)}
                 state["repetition"]["entries"].append(new_entry)
                 rep_map[next_id] = new_entry
 
-            core_bridge._adjudicate_state_py(state)
+            core_bridge._adjudicate_state_py(state, unavoidable_rep3=unavoidable)
 
     elapsed_s = round(time.perf_counter() - t_game0, 3)
 
@@ -447,6 +483,7 @@ def play_single_game(task: dict) -> dict:
             "edge_binh_sum": s["edge_binh_sum"],
             "buried_slider_sum": s["buried_slider_sum"],
             "adv_def_sum": s["adv_def_sum"],
+            "siege_3x3_sum": s["siege_3x3_sum"],
         }
 
     cam_m = _side_metrics(clp_pieces.Player.CAM)
@@ -505,6 +542,8 @@ def play_single_game(task: dict) -> dict:
         "xanh_buried_slider_sum": xanh_m["buried_slider_sum"],
         "cam_adv_def_sum": cam_m["adv_def_sum"],
         "xanh_adv_def_sum": xanh_m["adv_def_sum"],
+        "cam_siege_3x3_sum": cam_m["siege_3x3_sum"],
+        "xanh_siege_3x3_sum": xanh_m["siege_3x3_sum"],
         "lpgf_path": str(lpgf_file),
         "elapsed_s": elapsed_s,
     }
@@ -529,7 +568,90 @@ def _elo_from_score(mu: float) -> float:
     return -400.0 * math.log10((1.0 / mu) - 1.0)
 
 
-def compute_stats(records: List[dict]) -> dict:
+def _score_from_elo(elo: float) -> float:
+    return 1.0 / (1.0 + math.pow(10.0, -elo / 400.0))
+
+
+def compute_pentanomial_sprt(
+    records: List[dict],
+    elo0: float = 0.0,
+    elo1: float = 10.0,
+    alpha: float = 0.05,
+    beta: float = 0.05,
+    min_pairs: int = 10,
+) -> dict:
+    """Compute Fishtest/OpenBench pentanomial SPRT statistics from paired games."""
+    by_pair: Dict[int, List[dict]] = {}
+    for r in records:
+        by_pair.setdefault(int(r["pair_id"]), []).append(r)
+
+    buckets = {"LL": 0, "LD": 0, "WL_DD": 0, "WD": 0, "WW": 0}
+    pair_x: List[float] = []
+    for gs in by_pair.values():
+        if len(gs) != 2:
+            continue
+        pair_sum = gs[0]["score_a"] + gs[1]["score_a"]
+        idx = int(round(pair_sum * 2.0))
+        idx = min(max(idx, 0), 4)
+        key = ("LL", "LD", "WL_DD", "WD", "WW")[idx]
+        buckets[key] += 1
+        pair_x.append(pair_sum * 0.5)
+
+    n_pairs = len(pair_x)
+    la = math.log(beta / (1.0 - alpha))
+    lb = math.log((1.0 - beta) / alpha)
+    mu0 = _score_from_elo(elo0)
+    mu1 = _score_from_elo(elo1)
+
+    if n_pairs == 0:
+        return {
+            "pairs": 0,
+            "pentanomial": buckets,
+            "elo0": elo0,
+            "elo1": elo1,
+            "alpha": alpha,
+            "beta": beta,
+            "la": round(la, 4),
+            "lb": round(lb, 4),
+            "llr": 0.0,
+            "decision": "inconclusive",
+        }
+
+    mean_x = sum(pair_x) / n_pairs
+    # Regularize variance slightly (+0.0625 total spread) to prevent zero division when early pairs are identical
+    ss = sum((x - mean_x) ** 2 for x in pair_x)
+    var_x = (ss + 0.0625) / n_pairs
+    llr = (n_pairs * (mu1 - mu0) * (2.0 * mean_x - mu0 - mu1)) / (2.0 * var_x)
+
+    decision = "inconclusive"
+    if n_pairs >= min_pairs:
+        if llr >= lb:
+            decision = "H1"
+        elif llr <= la:
+            decision = "H0"
+
+    return {
+        "pairs": n_pairs,
+        "pentanomial": buckets,
+        "elo0": elo0,
+        "elo1": elo1,
+        "alpha": alpha,
+        "beta": beta,
+        "la": round(la, 4),
+        "lb": round(lb, 4),
+        "llr": round(llr, 4),
+        "decision": decision,
+    }
+
+
+def compute_stats(
+    records: List[dict],
+    elo0: float = 0.0,
+    elo1: float = 10.0,
+    alpha: float = 0.05,
+    beta: float = 0.05,
+    sprt_min_pairs: int = 10,
+) -> dict:
     n = len(records)
     if n == 0:
         return {"games": 0}
@@ -590,6 +712,7 @@ def compute_stats(records: List[dict]) -> dict:
     a_eb = b_eb = 0
     a_bs = b_bs = 0
     a_ad = b_ad = 0
+    a_sg = b_sg = 0
 
     for r in records:
         a_is_cam = r["cam_exe"] == r["engine_a"] and (
@@ -612,6 +735,8 @@ def compute_stats(records: List[dict]) -> dict:
             b_bs += int(r.get("xanh_buried_slider_sum", 0))
             a_ad += int(r.get("cam_adv_def_sum", 0))
             b_ad += int(r.get("xanh_adv_def_sum", 0))
+            a_sg += int(r.get("cam_siege_3x3_sum", 0))
+            b_sg += int(r.get("xanh_siege_3x3_sum", 0))
             if r["cam_avg_depth"] > 0:
                 a_depth_sum += r["cam_avg_depth"]
                 a_games_d += 1
@@ -635,12 +760,23 @@ def compute_stats(records: List[dict]) -> dict:
             a_bs += int(r.get("xanh_buried_slider_sum", 0))
             b_ad += int(r.get("cam_adv_def_sum", 0))
             a_ad += int(r.get("xanh_adv_def_sum", 0))
+            b_sg += int(r.get("cam_siege_3x3_sum", 0))
+            a_sg += int(r.get("xanh_siege_3x3_sum", 0))
             if r["xanh_avg_depth"] > 0:
                 a_depth_sum += r["xanh_avg_depth"]
                 a_games_d += 1
             if r["cam_avg_depth"] > 0:
                 b_depth_sum += r["cam_avg_depth"]
                 b_games_d += 1
+
+    sprt_info = compute_pentanomial_sprt(
+        records,
+        elo0=elo0,
+        elo1=elo1,
+        alpha=alpha,
+        beta=beta,
+        min_pairs=sprt_min_pairs,
+    )
 
     return {
         "games": n,
@@ -658,6 +794,8 @@ def compute_stats(records: List[dict]) -> dict:
         "elo_low": round(elo_low, 2),
         "elo_high": round(elo_high, 2),
         "los_pct": round(100.0 * los, 2),
+        "pentanomial": sprt_info["pentanomial"],
+        "sprt": sprt_info,
         "avg_ply": round(sum(r["ply"] for r in records) / n, 1),
         "avg_moves_played": round(sum(r["moves_played"] for r in records) / n, 1),
         "a_nps": round((a_nodes * 1000.0) / a_time, 1) if a_time > 0 else 0.0,
@@ -674,6 +812,8 @@ def compute_stats(records: List[dict]) -> dict:
         "b_buried_slider": round(b_bs / max(1, b_kplies), 4),
         "a_adv_def_rate_pct": round(100.0 * a_ad / max(1, a_kplies), 2),
         "b_adv_def_rate_pct": round(100.0 * b_ad / max(1, b_kplies), 2),
+        "a_siege_3x3_rate_pct": round(100.0 * a_sg / max(1, a_kplies), 2),
+        "b_siege_3x3_rate_pct": round(100.0 * b_sg / max(1, b_kplies), 2),
         "reasons": reasons,
         "illegal_moves": reasons.get("illegal_move", 0),
         "timeouts": reasons.get("timeout", 0),
@@ -697,6 +837,14 @@ def print_stats(summary: dict, wall_s: Optional[float] = None) -> None:
         f"Elo: {summary['elo']:+.1f} ± {summary['elo_ci95']:.1f} "
         f"[{summary['elo_low']:+.1f}, {summary['elo_high']:+.1f}] | LOS: {summary['los_pct']:.2f}%"
     )
+    if "sprt" in summary:
+        sp = summary["sprt"]
+        pt = sp["pentanomial"]
+        print(
+            f"Ptnml (0/0.5/1/1.5/2): [{pt['LL']}, {pt['LD']}, {pt['WL_DD']}, {pt['WD']}, {pt['WW']}] | "
+            f"SPRT ({sp['elo0']:+.1f}, {sp['elo1']:+.1f}): LLR={sp['llr']:+.2f} "
+            f"[{sp['la']:+.2f}, {sp['lb']:+.2f}] -> {sp['decision']}"
+        )
     print(
         f"Avg ply: {summary['avg_ply']} (played: {summary['avg_moves_played']}) | "
         f"Illegal: {summary['illegal_moves']} | Timeouts: {summary['timeouts']} | Errors: {summary['engine_errors']}"
@@ -709,7 +857,8 @@ def print_stats(summary: dict, wall_s: Optional[float] = None) -> None:
         f"Koma metrics (ply 12..40) A vs B: "
         f"edge_binh={summary['a_edge_facing_binh']:.4f} vs {summary['b_edge_facing_binh']:.4f} | "
         f"buried_slider={summary['a_buried_slider']:.4f} vs {summary['b_buried_slider']:.4f} | "
-        f"adv_def_rate={summary['a_adv_def_rate_pct']:.2f}% vs {summary['b_adv_def_rate_pct']:.2f}%"
+        f"adv_def_rate={summary['a_adv_def_rate_pct']:.2f}% vs {summary['b_adv_def_rate_pct']:.2f}% | "
+        f"siege_3x3_rate={summary['a_siege_3x3_rate_pct']:.2f}% vs {summary['b_siege_3x3_rate_pct']:.2f}%"
     )
     print(f"Reasons: {summary['reasons']}")
     if wall_s is not None:
@@ -732,6 +881,7 @@ def main() -> int:
     parser.add_argument("--grace-ms", type=int, default=1000, help="Timeout grace beyond movetime (ms).")
     parser.add_argument("--max-ply", type=int, default=300, help="Draw at ply >= max-ply.")
     parser.add_argument("--openings", type=Path, default=HOMEI_ROOT / "openings.txt")
+    parser.add_argument("--startpos", action="store_true", help="Play all games from standard initial position (no opening book/moves).")
     parser.add_argument(
         "--lpgf-root",
         type=Path,
@@ -751,6 +901,13 @@ def main() -> int:
         help="Number of concurrent games (capped at min(4, cpu_count//2)).",
     )
     parser.add_argument("--stats-only", action="store_true", help="Only print stats for existing run.")
+    parser.add_argument("--sprt", action="store_true", help="Enable pentanomial SPRT early stopping.")
+    parser.add_argument("--elo0", type=float, default=0.0, help="SPRT null hypothesis Elo (default: 0.0).")
+    parser.add_argument("--elo1", type=float, default=10.0, help="SPRT alt hypothesis Elo (default: 10.0).")
+    parser.add_argument("--alpha", type=float, default=0.05, help="SPRT false positive rate (default: 0.05).")
+    parser.add_argument("--beta", type=float, default=0.05, help="SPRT false negative rate (default: 0.05).")
+    parser.add_argument("--sprt-min-pairs", type=int, default=10, help="Minimum complete pairs before SPRT stop.")
+    parser.add_argument("--progress-interval", type=int, default=10, help="Print progress every N completed games.")
     args = parser.parse_args()
 
     check_free_disk(HOMEI_ROOT)
@@ -777,11 +934,18 @@ def main() -> int:
 
     if args.stats_only:
         records = [existing[k] for k in sorted(existing) if k < args.games]
-        summary = compute_stats(records)
+        summary = compute_stats(
+            records,
+            elo0=args.elo0,
+            elo1=args.elo1,
+            alpha=args.alpha,
+            beta=args.beta,
+            sprt_min_pairs=args.sprt_min_pairs,
+        )
         print_stats(summary)
         return 0
 
-    openings = load_openings(args.openings)
+    openings = [(STARTPOS_LPPN, [])] if args.startpos else load_openings(args.openings)
     name_a = args.name_a or args.engine_a.stem
     name_b = args.name_b or args.engine_b.stem
     env_a = parse_env_arg(args.env_a)
@@ -821,46 +985,99 @@ def main() -> int:
             }
         )
 
+    sprt_desc = (
+        f" | SPRT[{args.elo0:+.1f},{args.elo1:+.1f}]" if args.sprt else ""
+    )
     print(
         f"[match] Run={args.run} | {name_a} ({mt_a}ms) vs {name_b} ({mt_b}ms) | "
-        f"target={args.games}, resumed={len(existing)}, pending={len(pending_tasks)}, workers={workers}"
+        f"target={args.games}, resumed={len(existing)}, pending={len(pending_tasks)}, workers={workers}{sprt_desc}"
     )
 
     t0 = time.perf_counter()
+    sprt_stopped = False
     if pending_tasks:
         with HeavyLock(f"match_{args.run}"), HeartbeatMonitor(f"match_{args.run}") as hb:
             hb.update("playing", completed=len(existing), total=args.games)
+            task_iter = iter(pending_tasks)
+            max_in_flight = workers * 2 if args.sprt else len(pending_tasks)
             with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
-                futures = {pool.submit(play_single_game, t): t["game_id"] for t in pending_tasks}
+                in_flight: Dict[concurrent.futures.Future, int] = {}
+                for _ in range(min(max_in_flight, len(pending_tasks))):
+                    try:
+                        t = next(task_iter)
+                        in_flight[pool.submit(play_single_game, t)] = t["game_id"]
+                    except StopIteration:
+                        break
+
                 done_now = 0
-                for fut in concurrent.futures.as_completed(futures):
-                    rec = fut.result()
-                    existing[int(rec["id"])] = rec
-                    line = json.dumps(rec, ensure_ascii=False) + "\n"
-                    with run_jsonl.open("a", encoding="utf-8") as f:
-                        f.write(line)
-                        f.flush()
-                    with args.results_jsonl.open("a", encoding="utf-8") as mf:
-                        mf.write(line)
-                        mf.flush()
-                    done_now += 1
-                    hb.update("playing", completed=len(existing), total=args.games)
-                    if done_now % 20 == 0 or done_now == len(pending_tasks):
+                interval = max(1, args.progress_interval)
+                while in_flight:
+                    done_futs, _ = concurrent.futures.wait(
+                        in_flight.keys(), return_when=concurrent.futures.FIRST_COMPLETED
+                    )
+                    for fut in done_futs:
+                        in_flight.pop(fut)
+                        rec = fut.result()
+                        existing[int(rec["id"])] = rec
+                        line = json.dumps(rec, ensure_ascii=False) + "\n"
+                        with run_jsonl.open("a", encoding="utf-8") as f:
+                            f.write(line)
+                            f.flush()
+                        with args.results_jsonl.open("a", encoding="utf-8") as mf:
+                            mf.write(line)
+                            mf.flush()
+                        done_now += 1
+                        hb.update("playing", completed=len(existing), total=args.games)
+
                         recs = [existing[k] for k in sorted(existing) if k < args.games]
-                        s = compute_stats(recs)
-                        dt = time.perf_counter() - t0
-                        print(
-                            f"[progress {len(recs)}/{args.games}] W/D/L={s['wins_a']}/{s['draws']}/{s['losses_a']} "
-                            f"Elo={s['elo']:+.1f}±{s['elo_ci95']:.1f} LOS={s['los_pct']:.1f}% "
-                            f"({dt:.1f}s)"
+                        s = compute_stats(
+                            recs,
+                            elo0=args.elo0,
+                            elo1=args.elo1,
+                            alpha=args.alpha,
+                            beta=args.beta,
+                            sprt_min_pairs=args.sprt_min_pairs,
                         )
+                        sp = s["sprt"]
+                        if args.sprt and sp["decision"] in ("H0", "H1"):
+                            sprt_stopped = True
+                        if done_now % interval == 0 or (not in_flight and sprt_stopped) or done_now == len(pending_tasks) or (args.sprt and sp["decision"] != "inconclusive"):
+                            dt = time.perf_counter() - t0
+                            pt = sp["pentanomial"]
+                            print(
+                                f"[progress {len(recs)}/{args.games}] W/D/L={s['wins_a']}/{s['draws']}/{s['losses_a']} "
+                                f"Elo={s['elo']:+.1f}±{s['elo_ci95']:.1f} LOS={s['los_pct']:.1f}% "
+                                f"Ptnml=[{pt['LL']},{pt['LD']},{pt['WL_DD']},{pt['WD']},{pt['WW']}] "
+                                f"LLR={sp['llr']:+.2f} [{sp['la']:+.2f},{sp['lb']:+.2f}] {sp['decision']} "
+                                f"({dt:.1f}s)",
+                                flush=True,
+                            )
+
+                    if sprt_stopped:
+                        for rem_fut in list(in_flight.keys()):
+                            rem_fut.cancel()
+                        # Wait cleanly for any already-started workers in flight to finish saving
+                        continue
+                    while len(in_flight) < max_in_flight:
+                        try:
+                            t = next(task_iter)
+                            in_flight[pool.submit(play_single_game, t)] = t["game_id"]
+                        except StopIteration:
+                            break
 
     wall_s = time.perf_counter() - t0
     final_records = [existing[k] for k in sorted(existing) if k < args.games]
-    summary = compute_stats(final_records)
+    summary = compute_stats(
+        final_records,
+        elo0=args.elo0,
+        elo1=args.elo1,
+        alpha=args.alpha,
+        beta=args.beta,
+        sprt_min_pairs=args.sprt_min_pairs,
+    )
     print_stats(summary, wall_s=wall_s)
     (run_dir / "summary.json").write_text(
-        json.dumps({**summary, "wall_s": round(wall_s, 2)}, indent=2, ensure_ascii=False),
+        json.dumps({**summary, "wall_s": round(wall_s, 2), "sprt_stopped": sprt_stopped}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     return 0

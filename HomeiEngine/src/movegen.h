@@ -24,7 +24,6 @@ struct MoveList {
 };
 
 // Populates `out_dsts` with raw destination squares from `src_sq` in exact rules.py order.
-// Returns number of destinations.
 int get_raw_destinations(const Position& pos, int src_sq, int out_dsts[32]);
 
 struct RawDestList {
@@ -36,13 +35,13 @@ struct RawDestList {
 
 inline RawDestList get_raw_destinations(const Position& pos, int src_sq) {
     RawDestList out;
-    if (src_sq < 0 || src_sq >= NUM_SQUARES || pos.cell[src_sq].empty()) return out;
-    Side owner = pos.cell[src_sq].owner();
+    if (src_sq < 0 || src_sq >= NUM_SQUARES || pos.height[src_sq] == 0) return out;
+    Side owner = pos.cell_owner(src_sq);
     out.count = get_raw_destinations(pos, src_sq, out.sq);
     for (int i = 0; i < out.count; ++i) {
         int dsq = out.sq[i];
-        if (pos.cell[dsq].empty()) out.kind[i] = RawDestList::Empty;
-        else if (pos.cell[dsq].owner() == owner) out.kind[i] = RawDestList::Own;
+        if (pos.height[dsq] == 0) out.kind[i] = RawDestList::Empty;
+        else if (pos.cell_owner(dsq) == owner) out.kind[i] = RawDestList::Own;
         else out.kind[i] = RawDestList::Capture;
     }
     return out;
@@ -51,24 +50,42 @@ inline RawDestList get_raw_destinations(const Position& pos, int src_sq) {
 // Generates pseudo-legal moves in the exact order of rules.generate_moves.
 void generate_pseudo_moves(const Position& pos, MoveList& out);
 
-// Applies move `m` to `pos`, saving undo state in `u` and updating `pos.zobrist` incrementally.
+// Applies move `m` to `pos`, saving undo state in `u` and updating split Zobrist incrementally.
 void apply_move(Position& pos, const Move& m, UndoState& u);
 
 // Reverts move `m` on `pos` using `u`.
 void undo_move(Position& pos, const Move& m, const UndoState& u);
 
-// Generates strictly legal moves (filtering out moves that leave mover's VUONG in check).
-void generate_legal_moves(Position& pos, MoveList& out);
-inline void generate_legal_moves(const Position& pos, MoveList& out) {
-    Position copy = pos;
-    generate_legal_moves(copy, out);
-}
+// Generates strictly legal moves (zero apply_move/undo_move using pin blockers & checkersBB).
+void generate_legal_moves(const Position& pos, MoveList& out);
 std::vector<Move> generate_legal_moves(const Position& pos);
 
-// Generates capture moves (and optionally checks/drops) for quiescence search.
+// Generates capture moves for quiescence & staged search.
 void generate_capture_moves(const Position& pos, MoveList& out);
 
-// Perft node count using legal moves (without repetition/terminal adjudication cutoff, per spec 3.3).
+// Generates pseudo-legal quiet moves and drops (excluding captures).
+void generate_quiet_and_drop_moves(const Position& pos, MoveList& out);
+
+struct QuietGenFilter {
+    bool skip_far_noncheck_drops = false;
+    int max_plain_drop_facings = 4;
+};
+
+void generate_quiet_and_drop_moves(const Position& pos, MoveList& out, const QuietGenFilter& filter);
+
+// Fast O(1) pseudo-legality check for a candidate move (TT move, killer, countermove).
+bool is_pseudo_legal_move(const Position& pos, const Move& m);
+
+// Zero-apply_move bitboard king-safety test for a pseudo-legal move `m`.
+bool check_move_leaves_king_safe(const Position& pos, const Move& m, bool currently_in_check);
+
+// Ultra-fast O(1) legality check when `!currently_in_check` and `pin_blockers` is precomputed for the node.
+bool check_move_leaves_king_safe_pinned(const Position& pos, const Move& m, const Bitboard& pin_blockers);
+
+// Combined O(1) pseudo-legality + king-safety check.
+bool is_legal_move_fast(const Position& pos, const Move& m, bool currently_in_check);
+
+// Perft node count using legal moves (without repetition/terminal adjudication cutoff).
 uint64_t perft(Position& pos, int depth);
 
 } // namespace homei

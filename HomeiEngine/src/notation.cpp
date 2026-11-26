@@ -9,8 +9,8 @@ std::string format_canonical_notation(const Position& pos, const Move& m) {
     uint8_t moving_owner = pos.side_to_move;
     uint8_t moving_facing = 0;
 
-    if (m.kind != MoveKind::Drop && m.src >= 0 && m.src < NUM_SQUARES && !pos.cell[m.src].empty()) {
-        const Piece& top = pos.cell[m.src].top();
+    if (m.kind != MoveKind::Drop && m.src >= 0 && m.src < NUM_SQUARES && pos.height[m.src] > 0) {
+        const Piece top = pos.top_piece[m.src];
         ptype = top.type;
         moving_owner = top.owner;
         moving_facing = top.facing;
@@ -49,9 +49,8 @@ std::string format_canonical_notation(const Position& pos, const Move& m) {
         } else if (m.dst >= 0 && m.dst < NUM_SQUARES) {
             int ambiguous_count = 0;
             for (int sq = 0; sq < NUM_SQUARES; ++sq) {
-                const Cell& c = pos.cell[sq];
-                if (c.empty()) continue;
-                const Piece& top = c.top();
+                if (pos.height[sq] == 0) continue;
+                const Piece top = pos.top_piece[sq];
                 if (top.owner != moving_owner || top.type != ptype) continue;
                 RawDestList raw = get_raw_destinations(pos, sq);
                 for (int i = 0; i < raw.count; ++i) {
@@ -61,11 +60,10 @@ std::string format_canonical_notation(const Position& pos, const Move& m) {
                     }
                 }
             }
-            const Cell& dest_cell = pos.cell[m.dst];
-            bool rotate_conflict = !dest_cell.empty() &&
-                                   dest_cell.top().owner == moving_owner &&
-                                   dest_cell.top().type == ptype &&
-                                   can_rotate(dest_cell.top().type);
+            bool rotate_conflict = pos.height[m.dst] > 0 &&
+                                   pos.top_piece[m.dst].owner == moving_owner &&
+                                   pos.top_piece[m.dst].type == ptype &&
+                                   can_rotate(pos.top_piece[m.dst].type);
             if (ambiguous_count > 1 || rotate_conflict) {
                 need_src = true;
             }

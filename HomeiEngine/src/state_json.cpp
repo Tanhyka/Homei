@@ -40,7 +40,10 @@ bool decode_position_json(const JsonValue& v, Position& out_pos, std::string& er
             err = "Stack exceeds limit";
             return false;
         }
-        Cell& c = pos.cell[sq];
+        if (cell_v.arr_val.size() > 1 && pos.buried_count + static_cast<int>(cell_v.arr_val.size()) - 1 > MAX_BURIED_POOL) {
+            err = "Over 40 pieces";
+            return false;
+        }
         for (const JsonValue& pv : cell_v.arr_val) {
             if (!pv.is_object() || pv.obj_val.size() != 3) {
                 err = "Invalid piece fields";
@@ -67,7 +70,7 @@ bool decode_position_json(const JsonValue& v, Position& out_pos, std::string& er
                 return false;
             }
             uint8_t owner = (o_v->str_val == "CAM") ? CAM : XANH;
-            c.stack[c.size++] = Piece(static_cast<uint8_t>(pt), owner, static_cast<uint8_t>(f_v->int_val));
+            pos.cell_push(sq, Piece(static_cast<uint8_t>(pt), owner, static_cast<uint8_t>(f_v->int_val)));
         }
     }
 
@@ -124,14 +127,13 @@ bool decode_position_json(const JsonValue& v, Position& out_pos, std::string& er
     pos.king_sq[0] = 255;
     pos.king_sq[1] = 255;
     for (int sq = 0; sq < NUM_SQUARES; ++sq) {
-        const Cell& c = pos.cell[sq];
-        for (uint8_t i = 0; i < c.size; ++i) {
-            if (c.stack[i].type == VUONG) {
-                pos.king_sq[c.stack[i].owner] = static_cast<uint8_t>(sq);
-            }
+        if (pos.height[sq] == 0) continue;
+        if (pos.top_piece[sq].type == VUONG) {
+            pos.king_sq[pos.top_piece[sq].owner] = static_cast<uint8_t>(sq);
         }
     }
-    pos.zobrist = compute_zobrist(pos);
+    pos.sync_bitboards();
+    refresh_zobrist(pos);
     out_pos = pos;
     return true;
 }
@@ -141,14 +143,18 @@ JsonValue encode_position_json(const Position& pos) {
     board_arr.arr_val.reserve(NUM_SQUARES);
     for (int sq = 0; sq < NUM_SQUARES; ++sq) {
         JsonValue cell_arr = JsonValue::make_array();
-        const Cell& c = pos.cell[sq];
-        for (uint8_t i = 0; i < c.size; ++i) {
-            const Piece& p = c.stack[i];
-            JsonValue po = JsonValue::make_object();
-            po.obj_val["facing"] = JsonValue::make_int(p.facing);
-            po.obj_val["owner"] = JsonValue::make_string(side_name(static_cast<Side>(p.owner)));
-            po.obj_val["type"] = JsonValue::make_string(piece_type_name(p.type));
-            cell_arr.arr_val.push_back(std::move(po));
+        uint8_t sz = pos.height[sq];
+        if (sz > 0) {
+            Piece stack_buf[MAX_STACK_SIZE];
+            pos.cell_copy_stack(sq, stack_buf);
+            for (uint8_t i = 0; i < sz; ++i) {
+                const Piece& p = stack_buf[i];
+                JsonValue po = JsonValue::make_object();
+                po.obj_val["facing"] = JsonValue::make_int(p.facing);
+                po.obj_val["owner"] = JsonValue::make_string(side_name(static_cast<Side>(p.owner)));
+                po.obj_val["type"] = JsonValue::make_string(piece_type_name(p.type));
+                cell_arr.arr_val.push_back(std::move(po));
+            }
         }
         board_arr.arr_val.push_back(std::move(cell_arr));
     }
@@ -486,7 +492,7 @@ std::string format_move_json_str(const Move& m, const std::string& notation) {
 GameState make_base_state(const Position& pos, int ply) {
     GameState st;
     st.position = pos;
-    st.position.zobrist = compute_zobrist(st.position);
+    refresh_zobrist(st.position);
     st.ply = ply;
     st.repetition_complete = true;
     RepetitionEntry re;

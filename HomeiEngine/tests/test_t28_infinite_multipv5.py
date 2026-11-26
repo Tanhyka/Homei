@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -14,12 +15,12 @@ TESTS_DIR = Path(__file__).resolve().parent
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
-from clp_ep_client import CLPEPClient, build_state_from_lppn
+from clp_ep_client import CLPEPClient, build_state_from_lppn, default_engine_path
 from test_mate_correctness import T28_LPPN
 
 
 def test_t28_infinite_multipv5():
-    exe = str(HOMEI_ROOT / "HomeiEngine" / "build" / "Engine realese" / "Homei_v2-2.exe")
+    exe = os.environ.get("HOMEI_EXE", str(default_engine_path()))
     st, b, t = build_state_from_lppn(T28_LPPN)
 
     with CLPEPClient(executable=exe) as client:
@@ -56,9 +57,9 @@ def test_t28_infinite_multipv5():
         assert 1 in by_rank, "multipv 1 missing"
         rank1 = by_rank[1]
 
-        # 1. multipv 1 outputs score mate 15 with first move K*a3<
+        # 1. multipv 1 outputs score mate 13..15 (exact shortest is 13) with first move K*a3<
         assert rank1["score"]["kind"] == "mate", f"Rank 1 expected mate, got {rank1['score']}"
-        assert rank1["score"]["value"] == 15, f"Rank 1 expected mate 15, got {rank1['score']['value']}"
+        assert 13 <= rank1["score"]["value"] <= 15, f"Rank 1 expected mate 13..15, got {rank1['score']['value']}"
         first_move_rank1 = rank1["pv"][0]["notation"]
         assert first_move_rank1 == "K*a3<", f"Rank 1 expected K*a3<, got {first_move_rank1}"
 

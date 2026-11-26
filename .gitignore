@@ -1,14 +1,24 @@
-# Build & binaries
-HomeiEngine/build/
+# Build & binaries (CMake / MSVC / PGO)
+HomeiEngine/build*/
 *.exe
 *.pdb
 *.obj
 *.lib
 *.dll
+*.pgc
+*.pgd
 *.rar
 *.zip
 
-# Runtime, training data, games, backups
+# Large NNUE weights & training shards (>50-100 MB, distribute via GitHub Releases)
+networks/*.pt
+networks/*.nn
+Engine release/
+*.nn
+*.pt
+*.clpbin
+
+# Runtime, temporary data, games, backups
 data/
 games/
 run/

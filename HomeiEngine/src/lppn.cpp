@@ -133,21 +133,23 @@ bool validate_position(Position& pos, bool strict, std::string& err) {
     pos.king_sq[1] = 255;
 
     for (int sq = 0; sq < NUM_SQUARES; ++sq) {
-        const Cell& c = pos.cell[sq];
-        if (c.size > MAX_STACK_SIZE) {
+        uint8_t sz = pos.height[sq];
+        if (sz > MAX_STACK_SIZE) {
             err = "Stack exceeds limit";
             return false;
         }
-        if (c.size > 0) {
-            uint8_t owner = c.stack[0].owner;
-            for (uint8_t i = 0; i < c.size; ++i) {
-                const Piece& p = c.stack[i];
+        if (sz > 0) {
+            Piece stack_buf[MAX_STACK_SIZE];
+            pos.cell_copy_stack(sq, stack_buf);
+            uint8_t owner = stack_buf[0].owner;
+            for (uint8_t i = 0; i < sz; ++i) {
+                const Piece& p = stack_buf[i];
                 if (p.owner != owner) {
                     err = "Mixed-owner stack";
                     return false;
                 }
                 if (p.type == VUONG) {
-                    if (c.size > 1) {
+                    if (sz > 1) {
                         err = "VUONG stacked";
                         return false;
                     }
@@ -155,7 +157,7 @@ bool validate_position(Position& pos, bool strict, std::string& err) {
                     pos.king_sq[owner] = static_cast<uint8_t>(sq);
                 }
             }
-            total += c.size;
+            total += sz;
         }
     }
 
@@ -251,7 +253,7 @@ bool parse_lppn(std::string_view text, Position& out_pos, int& out_ply, std::str
                     err = "Row too wide";
                     return false;
                 }
-                Cell& cell = pos.cell[make_sq(r, col)];
+                int sq_idx = make_sq(r, col);
                 if (ch == '[') {
                     size_t end = row.find(']', i + 1);
                     if (end == std::string_view::npos || (end - i - 1) < 4 || ((end - i - 1) % 2) != 0) {
@@ -263,10 +265,14 @@ bool parse_lppn(std::string_view text, Position& out_pos, int& out_ply, std::str
                         err = "Stack exceeds limit";
                         return false;
                     }
+                    if (pos.buried_count + static_cast<int>(num_pieces) - 1 > MAX_BURIED_POOL) {
+                        err = "Over 40 pieces";
+                        return false;
+                    }
                     for (size_t n = i + 1; n < end; n += 2) {
                         Piece p;
                         if (!decode_pair(row.substr(n, 2), p, err)) return false;
-                        cell.stack[cell.size++] = p;
+                        pos.cell_push(sq_idx, p);
                     }
                     i = end + 1;
                 } else {
@@ -276,7 +282,7 @@ bool parse_lppn(std::string_view text, Position& out_pos, int& out_ply, std::str
                     }
                     Piece p;
                     if (!decode_pair(row.substr(i, 2), p, err)) return false;
-                    cell.stack[cell.size++] = p;
+                    pos.cell_push(sq_idx, p);
                     i += 2;
                 }
                 col += 1;
@@ -294,7 +300,8 @@ bool parse_lppn(std::string_view text, Position& out_pos, int& out_ply, std::str
 
     if (!validate_position(pos, strict, err)) return false;
 
-    pos.zobrist = compute_zobrist(pos);
+    pos.sync_bitboards();
+    refresh_zobrist(pos);
     out_pos = pos;
     out_ply = ply;
     return true;
@@ -313,8 +320,9 @@ bool format_lppn(const Position& pos, int ply, std::string& out_text, std::strin
         if (r > 0) res.push_back('/');
         int empty = 0;
         for (int c = 0; c < BOARD_SIZE; ++c) {
-            const Cell& cell = pos.cell[make_sq(r, c)];
-            if (cell.empty()) {
+            int sq = make_sq(r, c);
+            uint8_t sz = pos.height[sq];
+            if (sz == 0) {
                 empty++;
                 continue;
             }
@@ -322,12 +330,14 @@ bool format_lppn(const Position& pos, int ply, std::string& out_text, std::strin
                 res.push_back(static_cast<char>('0' + empty));
                 empty = 0;
             }
-            if (cell.size == 1) {
-                append_piece_token(cell.stack[0], res);
+            if (sz == 1) {
+                append_piece_token(pos.top_piece[sq], res);
             } else {
+                Piece stack_buf[MAX_STACK_SIZE];
+                pos.cell_copy_stack(sq, stack_buf);
                 res.push_back('[');
-                for (uint8_t i = 0; i < cell.size; ++i) {
-                    append_piece_token(cell.stack[i], res);
+                for (uint8_t i = 0; i < sz; ++i) {
+                    append_piece_token(stack_buf[i], res);
                 }
                 res.push_back(']');
             }
@@ -388,20 +398,19 @@ void setup_initial_position(Position& pos) {
         int pr = (side == CAM) ? 2 : 6;
         for (int c = 0; c < 9; ++c) {
             int sq_b = make_sq(br, c);
-            pos.cell[sq_b].stack[0] = Piece(back_row[c], s, f);
-            pos.cell[sq_b].size = 1;
+            pos.cell_push(sq_b, Piece(back_row[c], s, f));
             if (back_row[c] == VUONG) {
                 pos.king_sq[s] = static_cast<uint8_t>(sq_b);
             }
 
             int sq_p = make_sq(pr, c);
-            pos.cell[sq_p].stack[0] = Piece(BINH, s, f);
-            pos.cell[sq_p].size = 1;
+            pos.cell_push(sq_p, Piece(BINH, s, f));
         }
         pos.reserve[s] = RESERVE_LONG | RESERVE_PHUONG;
     }
     pos.side_to_move = CAM;
-    pos.zobrist = compute_zobrist(pos);
+    pos.sync_bitboards();
+    refresh_zobrist(pos);
 }
 
 } // namespace homei

@@ -382,3 +382,23 @@ def test_0_6_notation_parity_special_cases():
                 )
                 assert key in eng_by_struct
                 assert eng_by_struct[key] == m.canonical_notation(dec.board)
+
+
+def test_0_7_pinned_ki_jump_over_king_and_pinner_parity():
+    """Regression test for CLP-specific KI distance-2 jump along pin rays:
+    a pinned KI must NOT jump over its own King or over the enemy pinner."""
+    pinned_ki_lppns = [
+        # Real game_0052 ply 85: Xanh KI at g6 pinned by Cam PHUONG at f5 to Xanh VUONG at h7; jumping over h7 to i8 is illegal
+        "lppn1 X22T2V2T23/1S32B2S23/B1B21B2B21B1B21/6B21B2/1L22[p0b1]2x0X3/l01[b0b0]1P24/3k01b0b1b1B3/2v0s01s03/x0K33t03 x -/- TKBB/K 85",
+        # Synthetic diagonal pin: Xanh KI at g6 pinned by Cam PHUONG at f5; jumping over f5 to e4 or over h7 to i8 is illegal
+        "lppn1 4V24/9/9/9/9/4P24/3k05/2v06/9 x -/- -/- 20",
+        # Synthetic orthogonal pin: Xanh KI at f5 pinned by Cam LONG at e5; jumping over e5 to d5 or over g5 to h5 is illegal
+        "lppn1 4V24/9/9/9/4L24/4k04/4v04/9/9 x -/- -/- 20",
+    ]
+    with CLPEPClient() as client:
+        for lp in pinned_ki_lppns:
+            dec = clp_lppn.from_lppn(lp, strict=True)
+            client.set_position_lppn(lp)
+            eng_nots = {d["notation"] for d in client.get_legal_dicts()}
+            py_nots = {m.canonical_notation(dec.board) for m in clp_rules.legal_moves(dec.board, dec.turn)}
+            assert eng_nots == py_nots, f"Pinned-KI parity mismatch on {lp}: extra={eng_nots - py_nots}, missing={py_nots - eng_nots}"

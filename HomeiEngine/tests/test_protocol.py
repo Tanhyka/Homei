@@ -56,7 +56,7 @@ def test_p_1_handshake_and_engine_client_compatibility():
             "capability clocks movetime",
             "capability search infinite",
             "capability control stop",
-            "option name Depth type spin default 12 min 1 max 32",
+            "option name Depth type spin default 32 min 1 max 32",
             "option name Nodes type spin default 50000000 min 1 max 50000000",
             "option name MultiPV type spin default 1 min 1 max 5",
             "clpok",

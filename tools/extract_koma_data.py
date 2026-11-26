@@ -1,6 +1,6 @@
 """Step 2 Data Extraction Pipeline (tools/extract_koma_data.py).
 
-Scans all 238 human games in E:\\code5\\CLP_dataset\\LPGF\\HvH\\ using ref.clp.record_io:
+Scans all 238 human games in E:\\all-code\\Code1\\CLP_dataset\\LPGF\\HvH\\ using ref.clp.record_io:
 - Truncates before HISTORICAL_ILLEGAL_LOSS / illegal moves.
 - Splits 80/20 train/val BY GAME before horizontal mirror augmentation.
 - Deduplicates by canonical LPPN (including horizontal mirror deduplication across games).
@@ -37,7 +37,7 @@ from ref.clp import record_io
 from ref.clp import rules as clp_rules
 from tools.safe_proc import HeartbeatMonitor, HeavyLock, SafeEngineClient, max_safe_workers
 
-HVH_DIR = Path(r"E:\code5\CLP_dataset\LPGF\HvH")
+HVH_DIR = Path(r"E:\all-code\Code1\CLP_dataset\LPGF\HvH")
 V3_EXE = HOMEI_ROOT / "HomeiEngine" / "build" / "Engine realese" / "Homei_v3.exe"
 NEW_EXE = HOMEI_ROOT / "HomeiEngine" / "build" / "homei.exe"
 DATA_DIR = HOMEI_ROOT / "data"
